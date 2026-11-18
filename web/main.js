@@ -2,7 +2,7 @@
    title bar), dialogs and popups. Mirrors KlipperScreen screen.py + panels/base_panel.py. */
 "use strict";
 
-const VERSION = "0.3.2";
+const VERSION = "0.3.3";
 
 // Menus translated from KlipperScreen config/main_menu.conf, print_menu.conf, move_menu.conf.
 // Only panels that Rakerscreen implements are listed.
@@ -153,7 +153,25 @@ class ScreenApp {
       shutdown: Button("shutdown", null, null, { onclick: () => this.showPanel("shutdown") }),
     };
     for (const k of ["back", "home", "shortcut", "shortcut2", "estop", "shutdown"]) ab.append(this.ctl[k]);
+    // Back and the emergency stop stay when a panel puts its own buttons in the action bar
+    this.ctl.back.classList.add("ab-keep");
+    this.ctl.estop.classList.add("ab-keep");
     this.updateShortcuts();
+  }
+  /** A panel's own action bar buttons (e.g. the Macros editor), shown instead of home and the
+      shortcuts until cleared with null. Back and E-stop stay. */
+  setPanelActions(buttons) {
+    const ab = $("#actionbar");
+    if (this.panelActions) this.panelActions.remove();
+    this.panelActions = null;
+    const on = !!(buttons && buttons.length);
+    ab.classList.toggle("panel-actions", on);
+    if (on) {
+      buttons.forEach((b) => b.classList.add("ab-panel-btn"));
+      this.panelActions = el("div", { class: "ab-panel" }, ...buttons);
+      ab.insertBefore(this.panelActions, this.ctl.estop);
+    }
+    this.updateActionBar();
   }
   /** side_shortcut_target (KlipperScreen) and side_shortcut_2 (Rakerscreen extra) */
   updateShortcuts() {

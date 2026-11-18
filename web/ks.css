@@ -38,6 +38,13 @@ html, body {
 #actionbar { grid-row: 1 / span 2; grid-column: 1; display: flex; flex-direction: column; gap: 5px; min-height: 0; }
 #screen.vertical #actionbar { grid-row: 3; grid-column: 1; flex-direction: row; }
 #actionbar .btn { flex: 1 1 0; }
+/* a panel's own buttons (setPanelActions) replace home and the shortcuts; Back and E-stop stay */
+#actionbar.panel-actions > .btn:not(.ab-keep) { display: none; }
+#actionbar .ab-panel { display: contents; }
+#actionbar .ab-panel-btn { flex-direction: column; gap: 0; padding: .1em; font-size: .8em; line-height: 1.05; min-height: 0; min-width: 0; }
+#actionbar .ab-panel-btn img { width: calc(var(--img-side) * .9); height: calc(var(--img-side) * .9); }
+#actionbar .ab-panel-btn .lbl { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+#actionbar .ab-panel-btn.button_active { background: var(--active); border-radius: .6em; box-shadow: inset 0 0 0 .15em var(--text); }
 #actionbar .btn img { width: calc(var(--img-side) * 1.1 * 1.4); height: calc(var(--img-side) * 1.1 * 1.4); }
 
 /* ---------- Title bar ---------- */
@@ -319,6 +326,11 @@ body:not(.show-cursor), body:not(.show-cursor) * { cursor: none !important; }
 /* Macros grid */
 .macro-grid { display: grid; flex: 1 1 auto; min-height: 0; align-content: start; }
 .macro-grid .macro-tile { margin: .15em; }
+/* default tile shading: a touch lighter than the page so each macro reads as a button (layered over
+   the theme's button color; a picked color replaces it) */
+:root { --macro-shade: rgba(255, 255, 255, .07); }
+[data-theme="material-light"] { --macro-shade: rgba(0, 0, 0, 0); }
+.macro-grid .macro-tile:not(.macro-colored):not(.edit-toggle) { background-image: linear-gradient(var(--macro-shade), var(--macro-shade)); border-radius: .5em .5em 0 0; }
 .macro-grid .macro-tile .lbl { -webkit-line-clamp: 3; }
 .macro-grid.dense .macro-tile { font-size: .85em; padding: .15em; }
 /* Hide/Show toggle tile: dashed when off, filled + solid border when on */

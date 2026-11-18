@@ -180,6 +180,7 @@ const Settings = {
     macros_grid: "auto",    // Macros panel tile grid: "auto" or "<cols>x<rows>"
     macros_hidden: {},      // macro name -> true when hidden from the Macros panel
     macros_colors: {},      // macro name -> "#rrggbb" tile background (MACRO_COLORS)
+    macros_show_hidden: false, // Macros editor: also list hidden macros (dimmed) to show them again
     macros_layout: null,    // Macros page cells: names and null gaps (Edit, hold to move); null = A-Z
     move_speed_xy: 50,
     move_speed_z: 10,
