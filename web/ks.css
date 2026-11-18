@@ -339,9 +339,14 @@ body:not(.show-cursor), body:not(.show-cursor) * { cursor: none !important; }
 .btn.macro-colored img { filter: brightness(0) invert(1); }
 .btn.macro-colored.light-bg { color: #111; }
 .btn.macro-colored.light-bg img { filter: brightness(0); }
-/* Edit → Move: tiles can be dragged (no page scroll under the finger), or tapped to pick up */
-.macro-grid .macro-tile.movable { touch-action: none; cursor: grab; }
-.macro-grid .macro-tile.picked { outline: .25em solid var(--text); outline-offset: -.25em; filter: brightness(1.25); }
+/* Edit: hold a tile to move it. Gaps are blank on the normal page and dashed slots while editing. */
+.macro-grid .macro-gap { margin: .15em; border-radius: .6em; }
+.macro-grid.editing .macro-gap { border: .1em dashed rgba(127,127,127,.35); }
+.macro-grid.dragging .macro-gap { border: .12em dashed rgba(127,127,127,.55); }
+.macro-grid.editing .macro-tile { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.macro-grid .macro-tile.holding { transition: transform .45s ease-in, filter .45s; transform: scale(.94); filter: brightness(1.2); }
+.macro-grid .drop-target { outline: .25em solid var(--text); outline-offset: -.25em; }
+.macro-grid .macro-gap.drop-target { background: rgba(127,127,127,.25); }
 .macro-grid .macro-tile.drag-placeholder { opacity: .25; outline: .15em dashed var(--text); outline-offset: -.2em; }
 .drag-ghost { position: fixed; left: 0; top: 0; z-index: 80; pointer-events: none; margin: 0 !important; opacity: .92;
   box-shadow: 0 .4em 1.2em rgba(0,0,0,.6); transform-origin: center; }
