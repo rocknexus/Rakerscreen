@@ -330,6 +330,24 @@ body:not(.show-cursor), body:not(.show-cursor) * { cursor: none !important; }
 .macro-edit-bar { flex: 0 0 auto; display: flex; align-items: center; gap: .2em; border-bottom: 1px solid rgba(127,127,127,.25); }
 .macro-edit-bar .opt-row { flex: 1 1 auto; min-height: 0; border: 0; padding: .1em .4em; }
 .macro-edit-bar > .btn { flex: 0 0 auto; }
+.macro-edit-bar .mode-switch { display: flex; flex: 0 0 auto; gap: .15em; padding: .15em; border: .1em solid var(--lines); border-radius: .6em; margin-left: .2em; }
+.macro-edit-bar .mode-switch .btn { flex: 0 0 auto; padding: .4em .7em; border-radius: .45em; }
+.macro-edit-bar .mode-switch .btn.button_active { background: var(--text); color: var(--bg); font-weight: bold; }
+/* macro tile colors (Edit → Color): any theme, readable text and icons on light and dark shades */
+.btn.macro-colored, .btn.macro-colored:active { background: var(--macro-bg) !important; color: #fff; border-bottom-color: rgba(0,0,0,.35) !important; }
+.btn.macro-colored:active { filter: brightness(1.2); }
+.btn.macro-colored img { filter: brightness(0) invert(1); }
+.btn.macro-colored.light-bg { color: #111; }
+.btn.macro-colored.light-bg img { filter: brightness(0); }
+.color-palette { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); grid-auto-rows: minmax(1.8em, 1fr); gap: .35em; width: 100%; height: 100%; min-height: 0; }
+/* portrait: one row per hue (4 shades across) so swatches stay roughly square */
+@media (orientation: portrait) {
+  .color-palette { grid-template-columns: repeat(4, minmax(0, 1fr)); grid-template-rows: repeat(8, 2.6em); grid-auto-rows: auto;
+    grid-auto-flow: column; height: auto; }
+  .macro-edit-bar { flex-wrap: wrap; justify-content: flex-start; }
+}
+.color-palette .swatch { background: var(--macro-bg); border: .15em solid rgba(255,255,255,.15); border-radius: .4em; padding: 0; min-width: 0; min-height: 0; }
+.color-palette .swatch.current { border: .25em solid var(--text); box-shadow: 0 0 0 .12em var(--bg) inset; }
 .macro-params { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .3em 1em; width: 100%; }
 .macro-params .param label { min-width: 5em; text-align: left; }
 .macro-params .entry { flex: 1 1 auto; text-align: left; }

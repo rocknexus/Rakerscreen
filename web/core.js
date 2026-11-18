@@ -179,6 +179,7 @@ const Settings = {
     update_skip: "",        // version the user chose to skip in the automatic prompt
     macros_grid: "auto",    // Macros panel tile grid: "auto" or "<cols>x<rows>"
     macros_hidden: {},      // macro name -> true when hidden from the Macros panel
+    macros_colors: {},      // macro name -> "#rrggbb" tile background (MACRO_COLORS)
     move_speed_xy: 50,
     move_speed_z: 10,
     invert_x: false, invert_y: false, invert_z: false,

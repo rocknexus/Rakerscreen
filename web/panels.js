@@ -964,6 +964,36 @@ function formatSize(n) {
 const MACRO_GRID_SIZES = [["auto", "Auto (fill)"], ["2x2", "2 × 2"], ["3x2", "3 × 2"], ["3x3", "3 × 3"], ["4x2", "4 × 2"],
   ["4x3", "4 × 3"], ["4x4", "4 × 4"], ["5x3", "5 × 3"], ["5x4", "5 × 4"], ["6x4", "6 × 4"]];
 
+/** 32 tile colors: 8 hues (columns) x 4 shades (rows: deep, dark, bright, light). */
+const MACRO_COLOR_HUES = ["Red", "Orange", "Yellow", "Green", "Teal", "Blue", "Purple", "Grey"];
+const MACRO_COLOR_SHADES = ["deep", "dark", "bright", "light"];
+const MACRO_COLORS = [
+  ["#5c1a1a", "#5c2e0e", "#5a4a08", "#1b4320", "#0f3f3c", "#13294f", "#34164f", "#1e2225"],
+  ["#8e2424", "#9a4a12", "#8f7510", "#2e7032", "#17695f", "#1f4a8a", "#5a2a87", "#3c4247"],
+  ["#d63a3a", "#ef7d22", "#e8c21c", "#43a047", "#1fa392", "#2f7de1", "#9046cf", "#6f777e"],
+  ["#f28b82", "#fbb779", "#fce48a", "#a5d6a7", "#8fd9cc", "#9ec5f8", "#cfa8ef", "#c3c8cc"],
+];
+function macroColorName(hex) {
+  for (let r = 0; r < MACRO_COLORS.length; r++) {
+    const c = MACRO_COLORS[r].indexOf(hex);
+    if (c >= 0) return `${MACRO_COLOR_HUES[c]}, ${MACRO_COLOR_SHADES[r]}`;
+  }
+  return hex;
+}
+/** true when dark text and icons read better than white on this background (WCAG relative luminance) */
+function isLightColor(hex) {
+  const lin = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
+  const n = parseInt(hex.slice(1), 16);
+  const L = 0.2126 * lin((n >> 16) & 255) + 0.7152 * lin((n >> 8) & 255) + 0.0722 * lin(n & 255);
+  return L > 0.179; // above this, black text has more contrast than white
+}
+/** Shade a button's background (null: back to the theme's look). */
+function paintTile(btn, hex) {
+  btn.classList.toggle("macro-colored", !!hex);
+  btn.classList.toggle("light-bg", !!hex && isLightColor(hex));
+  if (hex) btn.style.setProperty("--macro-bg", hex); else btn.style.removeProperty("--macro-bg");
+}
+
 /** {PARAM: default} from a macro's gcode template (params.X | default(...)) */
 function macroParams(cfg) {
   const params = {};
@@ -1001,7 +1031,8 @@ Panels.gcode_macros = class extends Panel {
     this.baseTitle = this.title;
     this.view = el("div", { class: "fill", style: { display: "flex", flexDirection: "column", minHeight: 0 } });
     this.el.append(this.view);
-    this.editing = false; // the Hide/Show toggle: taps hide/unhide instead of running
+    this.editing = false;   // the Edit toggle: taps edit tiles instead of running macros
+    this.editMode = "hide"; // what a tap does while editing: "hide" (hide/show) or "color" (pick a color)
   }
   activate() { this.render(); }
   deactivate() { if (this.editing) this.editing = false; } // leaving the panel turns the toggle off
@@ -1030,9 +1061,39 @@ Panels.gcode_macros = class extends Panel {
   updateEditCount() {
     if (!this.editing) return;
     const all = this.allMacros(), h = this.hiddenSet();
+    if (this.editMode === "color") {
+      const n = all.filter((m) => this.colors()[m]).length;
+      this.setHeading(`tap to color (${n}/${all.length} colored)`);
+      return;
+    }
     const shown = all.filter((m) => !h[m]).length;
     this.setHeading(`tap to hide/show (${shown}/${all.length} shown)`);
   }
+  colors() { return Settings.get("macros_colors") || {}; }
+  setColor(name, hex, tile) {
+    const c = { ...this.colors() };
+    if (hex) c[name] = hex; else delete c[name];
+    Settings.set("macros_colors", c);
+    if (tile) paintTile(tile, hex);
+    this.updateEditCount();
+  }
+  /** The 32-color palette for one macro: tap a swatch to apply it, "No color" for the theme's look. */
+  pickColor(name, tile) {
+    const cur = this.colors()[name];
+    const pal = el("div", { class: "color-palette" });
+    let close = () => {};
+    MACRO_COLORS.forEach((row) => row.forEach((hex) => {
+      const s = el("button", { class: "swatch" + (hex === cur ? " current" : ""), title: macroColorName(hex), "aria-label": macroColorName(hex),
+        onclick: () => { close(); this.setColor(name, hex, tile); } });
+      paintTile(s, hex);
+      pal.append(s);
+    }));
+    close = this.app.dialog(`Color: ${name.replace(/_/g, " ")}`, [
+      { name: "No color", style: "dialog-warning", cb: () => this.setColor(name, null, tile) },
+      { name: "Cancel", style: "dialog-error" },
+    ], pal);
+  }
+  editTap(name, tile) { if (this.editMode === "color") this.pickColor(name, tile); else this.toggleHidden(name, tile); }
   renderGrid() {
     this.setHeading(null);
     this.view.innerHTML = "";
@@ -1042,10 +1103,22 @@ Panels.gcode_macros = class extends Panel {
     const macros = this.editing ? all : all.filter((m) => !hidden[m]);
     if (this.editing) {
       const setAll = (hide) => { const h = {}; if (hide) all.forEach((m) => (h[m] = true)); Settings.set("macros_hidden", h); this.render(); };
+      const mode = (key, label) => {
+        const b = Button(null, label, null, { lines: 1, onclick: () => { this.editMode = key; this.render(); } });
+        b.classList.add("mode-btn");
+        b.classList.toggle("button_active", this.editMode === key);
+        return b;
+      };
+      const actions = this.editMode === "color"
+        ? [Button("cancel", "Clear colors", "color2", { side: true, lines: 1, onclick: () => this.app.dialog("Clear colors", [
+            { name: "Clear", style: "dialog-default", cb: () => { Settings.set("macros_colors", {}); this.render(); } },
+            { name: "Cancel", style: "dialog-error" }], "Remove the color from every macro?") })]
+        : [Button("complete", "Show all", "color3", { side: true, lines: 1, onclick: () => setAll(false) }),
+           Button("cancel", "Hide all", "color2", { side: true, lines: 1, onclick: () => setAll(true) })];
       const bar = el("div", { class: "macro-edit-bar" },
+        el("div", { class: "mode-switch" }, mode("hide", "Hide/Show"), mode("color", "Color")),
         optionRow(this.app, { key: "macros_grid", name: "Grid size", type: "dropdown", options: MACRO_GRID_SIZES, cb: () => this.render() }),
-        Button("complete", "Show all", "color3", { side: true, lines: 1, onclick: () => setAll(false) }),
-        Button("cancel", "Hide all", "color2", { side: true, lines: 1, onclick: () => setAll(true) }));
+        ...actions);
       this.view.append(bar);
     }
     const n = macros.length + 1; // + the Hide/Show toggle tile
@@ -1062,24 +1135,26 @@ Panels.gcode_macros = class extends Panel {
     const grid = el("div", { class: "macro-grid scroll" + (cellH < fs * 3.4 ? " dense" : "") });
     grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
     grid.style.gridAutoRows = `${Math.floor(cellH)}px`;
+    const colors = this.colors();
     macros.forEach((m, i) => {
       const params = Object.keys(macroParams(this.configOf(m)));
       const label = m.replace(/_/g, " ") + (params.length ? " …" : ""); // … = asks for parameters
       const b = Button(showIcon ? "custom-script" : null, label, `color${(i % 4) + 1}`, {
-        onclick: (e, btn) => (this.editing ? this.toggleHidden(m, btn) : this.runMacro(m, btn)),
+        onclick: (e, btn) => (this.editing ? this.editTap(m, btn) : this.runMacro(m, btn)),
       });
       b.classList.add("macro-tile");
+      if (colors[m]) paintTile(b, colors[m]);
       if (this.editing && hidden[m]) b.classList.add("macro-hidden");
       grid.append(b);
     });
-    // the toggle: "Hide/Show" turns editing on, "Done" (highlighted) turns it off
-    const toggle = Button(showIcon ? (this.editing ? "complete" : "edit") : null, this.editing ? "Done" : "Hide/Show", null,
+    // the toggle: "Edit" turns editing on, "Done" (highlighted) turns it off
+    const toggle = Button(showIcon ? (this.editing ? "complete" : "edit") : null, this.editing ? "Done" : "Edit", null,
       { onclick: () => this.setEditing(!this.editing) });
     toggle.classList.add("macro-tile", "edit-toggle");
     toggle.classList.toggle("on", this.editing);
     grid.append(toggle);
     this.view.append(grid);
-    if (!macros.length) grid.prepend(el("div", { class: "label", style: { gridColumn: `1 / span ${Math.max(1, cols - 1)}` } }, all.length ? "All macros are hidden. Tap Hide/Show to bring them back" : "No macros"));
+    if (!macros.length) grid.prepend(el("div", { class: "label", style: { gridColumn: `1 / span ${Math.max(1, cols - 1)}` } }, all.length ? "All macros are hidden. Tap Edit to bring them back" : "No macros"));
     this.gridInfo = { cols, rows, total: macros.length, scrolls: macros.length + 1 > cols * rows };
     this.updateEditCount();
   }
