@@ -1133,8 +1133,8 @@ Panels.gcode_macros = class extends Panel {
 
   // ------------------------------------------------------------ press and hold to move (edit mode)
   /**
-   * Holding a tile for a moment lifts it. The grid then shows the normal Macros page exactly (no
-   * hidden macros, no edit bar, same tile size) plus empty slots, and the tile follows the finger.
+   * Holding a tile for a moment lifts it. The grid then shows the normal Macros page's tiles (no
+   * hidden macros, same tile size) plus empty slots, and the tile follows the finger.
    * Dropping on an empty slot moves it there and leaves a gap where it was; dropping on another
    * macro swaps the two.
    */
@@ -1293,9 +1293,12 @@ Panels.gcode_macros = class extends Panel {
     const all = this.allMacros();
     const cells = this.layoutCells();
     const dragging = !!this.drag;
-    // the editor's bar sits above the grid; it is left out while a tile is lifted, so the grid then has
-    // exactly the normal page's size
-    if (this.editing && !dragging) this.view.append(this.editBar());
+    // the editor's bar sits above the grid, and stays while a tile is lifted (inert until it's dropped)
+    if (this.editing) {
+      const bar = this.editBar();
+      bar.classList.toggle("inert", dragging);
+      this.view.append(bar);
+    }
     this.app.setPanelActions([this.editButton()], false); // Edit / Done lives in the action bar on this page
     // with "Show hidden" on, editing adds the hidden macros, dimmed, after the layout to show them again
     const hiddenTail = this.editing && !dragging && this.showHidden() ? all.filter((m) => hidden[m]) : [];
