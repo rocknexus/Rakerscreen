@@ -1,4 +1,4 @@
-/* PocketScreen input module: the one place text and number input comes from. Android's keyboard is
+/* Rakerscreen input module: the one place text and number input comes from. Android's keyboard is
    never used (KlipperScreen likewise ships its own keyboard widget).
 
    Input.prompt({...})  dialog asking for text: title, value, layout, password, desc, validate, onSubmit

@@ -1,5 +1,5 @@
 # Builds the APK and publishes it as GitHub release v<version> (version from web/main.js).
-# Installed PocketScreen apps find it on their next update check.
+# Installed Rakerscreen apps find it on their next update check.
 #   powershell -ExecutionPolicy Bypass -File tools/release.ps1 -Notes "What changed"
 # Needs the GitHub CLI (gh) signed in with access to the repository, and the original signing key.
 param(
@@ -17,13 +17,13 @@ if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { throw "build failed" }
 
 $m = Select-String -Path "$root\web\main.js" -Pattern 'const VERSION = "(\d+\.\d+\.\d+)"' | Select-Object -First 1
 $ver = $m.Matches[0].Groups[1].Value
-$apk = Join-Path $root "releases\PocketScreen-v$ver.apk"
+$apk = Join-Path $root "releases\Rakerscreen-v$ver.apk"
 if (-not (Test-Path $apk)) { throw "$apk not found" }
 
 & gh release view "v$ver" --repo $Repo *> $null
 if ($LASTEXITCODE -eq 0) { throw "Release v$ver already exists. Bump VERSION in web/main.js first." }
 
-if (-not $Notes) { $Notes = "PocketScreen $ver" }
+if (-not $Notes) { $Notes = "Rakerscreen $ver" }
 & gh release create "v$ver" $apk --repo $Repo --title "v$ver" --notes $Notes --latest
 if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }
 Write-Host "Published v$ver to https://github.com/$Repo/releases/tag/v$ver"

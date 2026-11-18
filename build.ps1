@@ -1,4 +1,4 @@
-# Builds releases\PocketScreen-v<version>.apk with the Android SDK command-line tools only (no Gradle).
+# Builds releases\Rakerscreen-v<version>.apk with the Android SDK command-line tools only (no Gradle).
 # The version comes from `const VERSION = "x.y.z"` in web/main.js, the single place to bump it.
 # Requirements: Android SDK (platform + build-tools) and a JDK 17+ (Android Studio's bundled JBR works).
 #   powershell -ExecutionPolicy Bypass -File build.ps1
@@ -74,10 +74,10 @@ Run $zipalign @("-p", "-f", "4", "$out\unsigned.apk", "$out\aligned.apk")
 $ks = Join-Path $root "pocketscreen-debug.keystore"
 if (-not (Test-Path $ks)) {
     Run $keytool @("-genkeypair", "-keystore", $ks, "-storepass", "android", "-keypass", "android", "-alias", "pocketscreen",
-        "-keyalg", "RSA", "-keysize", "2048", "-validity", "10000", "-dname", "CN=PocketScreen Debug")
+        "-keyalg", "RSA", "-keysize", "2048", "-validity", "10000", "-dname", "CN=Rakerscreen Debug")
 }
 New-Item -ItemType Directory -Force "$root\releases" | Out-Null
-$apk = Join-Path $root "releases\PocketScreen-v$VersionName.apk"
+$apk = Join-Path $root "releases\Rakerscreen-v$VersionName.apk"
 Run $apksigner @("sign", "--v4-signing-enabled", "false", "--ks", $ks, "--ks-pass", "pass:android", "--key-pass", "pass:android", "--ks-key-alias", "pocketscreen", "--out", $apk, "$out\aligned.apk")
 Run $apksigner @("verify", "--print-certs", $apk)
 Write-Host "`nBuilt $apk ($([math]::Round((Get-Item $apk).Length / 1KB)) KB)"

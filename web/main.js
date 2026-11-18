@@ -1,11 +1,11 @@
-/* PocketScreen screen controller: connection lifecycle, navigation stack, base panel (action bar +
+/* Rakerscreen screen controller: connection lifecycle, navigation stack, base panel (action bar +
    title bar), dialogs and popups. Mirrors KlipperScreen screen.py + panels/base_panel.py. */
 "use strict";
 
-const VERSION = "0.2.8";
+const VERSION = "0.2.9";
 
 // Menus translated from KlipperScreen config/main_menu.conf, print_menu.conf, move_menu.conf.
-// Only panels that PocketScreen implements are listed.
+// Only panels that Rakerscreen implements are listed.
 const MENUS = {
   __main: [
     { key: "move", name: "Move", icon: "move", panel: "move" },
@@ -24,7 +24,7 @@ const MENUS = {
     { key: "camera", name: "Camera", icon: "camera", panel: "camera", enable: () => screenApp.webcams.length > 0 },
     { key: "console", name: "Console", icon: "console", panel: "console" },
     { key: "save", name: "Save Config", icon: "complete", method: "ks_confirm_save" },
-    { key: "settings", name: "PocketScreen", icon: "settings", panel: "settings" },
+    { key: "settings", name: "Rakerscreen", icon: "settings", panel: "settings" },
     { key: "notifications", name: "Notifications", icon: "notifications", panel: "notifications" },
     { key: "system", name: "System", icon: "info", panel: "system", enable: () => screenApp.mr.connected },
     { key: "fine_tune", name: "Fine Tuning", icon: "fine-tune", panel: "fine_tune" },
@@ -40,7 +40,7 @@ const MENUS = {
     { key: "camera", name: "Camera", icon: "camera", panel: "camera", enable: () => screenApp.webcams.length > 0 },
     { key: "console", name: "Console", icon: "console", panel: "console" },
     { key: "limits", name: "Limits", icon: "fine-tune", panel: "limits" },
-    { key: "settings", name: "PocketScreen", icon: "settings", panel: "settings" },
+    { key: "settings", name: "Rakerscreen", icon: "settings", panel: "settings" },
     { key: "system", name: "System", icon: "info", panel: "system", enable: () => screenApp.mr.connected },
     { key: "lock", name: "Lock", icon: "lock", method: "lock_screen" },
   ],
@@ -134,7 +134,7 @@ class ScreenApp {
     document.body.classList.toggle("wide-scroll", !!Settings.get("show_scroll_steppers"));
     document.body.classList.toggle("show-cursor", !!Settings.get("show_cursor"));
   }
-  /** Forced orientation (PocketScreen extra). The activity also restores it natively at launch. */
+  /** Forced orientation (Rakerscreen extra). The activity also restores it natively at launch. */
   applyOrientation() {
     if (window.PSBridge && PSBridge.setOrientation) PSBridge.setOrientation(String(Settings.get("orientation") || "auto"));
   }
@@ -155,7 +155,7 @@ class ScreenApp {
     for (const k of ["back", "home", "shortcut", "shortcut2", "estop", "shutdown"]) ab.append(this.ctl[k]);
     this.updateShortcuts();
   }
-  /** side_shortcut_target (KlipperScreen) and side_shortcut_2 (PocketScreen extra) */
+  /** side_shortcut_target (KlipperScreen) and side_shortcut_2 (Rakerscreen extra) */
   updateShortcuts() {
     for (const [btn, key] of [["shortcut", "side_shortcut_target"], ["shortcut2", "side_shortcut_2"]]) {
       const target = Settings.get(key);
@@ -334,7 +334,7 @@ class ScreenApp {
   current() { return this.stack[this.stack.length - 1]; }
   showPanel(name, title, extra, opts = {}) {
     const Cls = Panels[name];
-    if (!Cls) { this.popup(`Panel "${name}" is not available in PocketScreen`, 2); return; }
+    if (!Cls) { this.popup(`Panel "${name}" is not available in Rakerscreen`, 2); return; }
     if (opts.removeAll) { while (this.stack.length) this._pop(true); }
     const existing = this.stack.findIndex((s) => s.name === name && !opts.items);
     if (existing >= 0 && !opts.items) {
@@ -395,7 +395,7 @@ class ScreenApp {
     this.showPanel("menu", MENU_TITLES[key] || key, null, { items: MENUS[key] });
   }
   menuItemClicked(item) {
-    if (item.panel) this.showPanel(item.panel, item.name === "PocketScreen" ? null : item.name);
+    if (item.panel) this.showPanel(item.panel, item.name === "Rakerscreen" ? null : item.name);
     else if (item.method === "ks_confirm_save") this.confirmSave();
     else if (item.method === "lock_screen") this.lock();
     else if (item.method) this.sendAction(item.method, item.params || {});
@@ -528,7 +528,7 @@ class ScreenApp {
     const t = (ms) => { const d = new Date(ms); return `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${d.toTimeString().slice(0, 8)}`; };
     const si = this.serverInfo || {};
     const lines = [
-      `PocketScreen ${VERSION}${dev.appVersion ? " (apk " + dev.appVersion + ")" : ""} report ${t(Date.now())}`,
+      `Rakerscreen ${VERSION}${dev.appVersion ? " (apk " + dev.appVersion + ")" : ""} report ${t(Date.now())}`,
       `Device: ${dev.manufacturer ? dev.manufacturer + " " + dev.model + ", Android " + dev.release + " (SDK " + dev.sdk + ")" : "browser"}, WebView ${chrome}`,
       `Endpoint: ${this.mr.url()} via ${this.mr.native ? "native" : "browser"} ws, api key ${Settings.get("moonraker_api_key") ? "set" : "none"}, auto-port ${Settings.get("auto_port") ? "on" : "off"}`,
       `Ports tried: ${Object.entries(this.portsTried || {}).map(([p, r]) => `${p}=${r}`).join(", ") || "-"}`,
@@ -550,7 +550,7 @@ class ScreenApp {
       if (navigator.clipboard) navigator.clipboard.writeText(text).then(() => this.popup("Report copied", 1), () => this.popup("Copy failed"));
     };
     const buttons = [];
-    if (window.PSBridge && PSBridge.shareText) buttons.push({ name: "Share", style: "dialog-default", cb: () => PSBridge.shareText("PocketScreen error report", text) });
+    if (window.PSBridge && PSBridge.shareText) buttons.push({ name: "Share", style: "dialog-default", cb: () => PSBridge.shareText("Rakerscreen error report", text) });
     buttons.push({ name: "Copy", style: "dialog-info", cb: copy });
     buttons.push({ name: "Clear log", style: "dialog-warning", cb: () => { ErrorLog.clear(); this.portsTried = {}; this.popup("Error log cleared", 1); } });
     buttons.push({ name: "Close", style: "dialog-error" });
@@ -565,7 +565,7 @@ class ScreenApp {
     }
     (this.portsTried = this.portsTried || {})[this.mr.port()] = "ok";
     try {
-      const ident = { client_name: "PocketScreen", version: VERSION, type: "display", url: "https://github.com/KlipperScreen/KlipperScreen" };
+      const ident = { client_name: "Rakerscreen", version: VERSION, type: "display", url: "https://github.com/KlipperScreen/KlipperScreen" };
       const key = Settings.get("moonraker_api_key");
       if (key) ident.api_key = key;
       await this.mr.call("server.connection.identify", ident).catch(() => {});

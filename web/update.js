@@ -1,10 +1,10 @@
-/* PocketScreen self-update from GitHub releases.
+/* Rakerscreen self-update from GitHub releases.
 
    A release is a GitHub release in UPDATE_REPO whose tag is the version ("v0.2.8") with the APK
    attached. The app asks GitHub for the latest release (at startup, every 6 hours, or when asked),
    compares it with VERSION and offers the update. Installing downloads the APK natively and hands it
    to Android's package installer, which shows its own "Update this app?" screen; Android then closes
-   PocketScreen, replaces it and it is opened again. Klipper keeps running in Klip Pocket meanwhile.
+   Rakerscreen, replaces it and it is opened again. Klipper keeps running in Klip Pocket meanwhile.
 
    Updates only install over an APK signed with the same key (pocketscreen-debug.keystore). */
 "use strict";
@@ -80,7 +80,7 @@ class Updater {
     };
     const newer = compareVersions(this.latest.version, VERSION) > 0;
     this.setState(newer ? "available" : "current");
-    if (!newer) { if (this.manual) this.app.popup(`PocketScreen ${VERSION} is up to date`, 1); return; }
+    if (!newer) { if (this.manual) this.app.popup(`Rakerscreen ${VERSION} is up to date`, 1); return; }
     if (!this.latest.url) { if (this.manual) this.app.popup(`v${this.latest.version} has no APK attached yet`, 2); return; }
     // automatic checks never interrupt a print, and respect "Skip this version"
     let printing = false;
@@ -104,7 +104,7 @@ class Updater {
       { name: "Update", style: "dialog-default", cb: () => this.install() },
       { name: "Later", style: "dialog-info" },
       { name: "Skip this version", style: "dialog-error", cb: () => { Settings.set("update_skip", l.version); this.app.popup(`v${l.version} skipped. Settings → Updates still installs it`, 1); } },
-    ], `You have PocketScreen ${VERSION}.${notes}${size}\n\nKlipper keeps running while PocketScreen updates.`);
+    ], `You have Rakerscreen ${VERSION}.${notes}${size}\n\nKlipper keeps running while Rakerscreen updates.`);
   }
   install() {
     const l = this.latest;
@@ -112,7 +112,7 @@ class Updater {
     if (!this.native()) { window.open(l.page, "_blank"); return; } // browser: show the release page
     this.manual = true;
     this.progressText = el("div", {}, `Downloading v${l.version}…`);
-    this.progressClose = this.app.dialog("Updating PocketScreen", [{ name: "Hide", style: "dialog-info" }], this.progressText,
+    this.progressClose = this.app.dialog("Updating Rakerscreen", [{ name: "Hide", style: "dialog-info" }], this.progressText,
       () => { this.progressClose = null; });
     this.setState("downloading");
     PSBridge.installUpdate(UPDATE_REPO, l.url);
@@ -130,13 +130,13 @@ class Updater {
       this.app.dialog("Allow updates", [
         { name: "Update", style: "dialog-default", cb: () => this.install() },
         { name: "Cancel", style: "dialog-error" },
-      ], "Android needs permission once.\n\nIn the screen that opened, turn on \"Allow from this source\" for PocketScreen, come back, then tap Update.");
+      ], "Android needs permission once.\n\nIn the screen that opened, turn on \"Allow from this source\" for Rakerscreen, come back, then tap Update.");
     } else if (s === "installing") {
       this.setState("installing");
       this.say("Installing…");
     } else if (s === "confirm") {
       this.setState("installing");
-      this.say("Tap Update on Android's screen.\n\nPocketScreen then closes and is replaced. If it doesn't reopen by itself, open it again.");
+      this.say("Tap Update on Android's screen.\n\nRakerscreen then closes and is replaced. If it doesn't reopen by itself, open it again.");
     } else if (s === "installed") {
       this.setState("current");
       this.say("Updated.");

@@ -38,7 +38,7 @@ import java.net.URL;
 import java.util.regex.Pattern;
 
 /**
- * Full-screen kiosk WebView hosting the PocketScreen UI (assets/web) plus a JS bridge
+ * Full-screen kiosk WebView hosting the Rakerscreen UI (assets/web) plus a JS bridge
  * ("PSBridge") that provides a native WebSocket to Moonraker on 127.0.0.1.
  */
 public class MainActivity extends Activity {
@@ -289,7 +289,7 @@ public class MainActivity extends Activity {
         public void copyText(final String text) {
             runOnUiThread(() -> {
                 ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-                if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("PocketScreen report", text));
+                if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("Rakerscreen report", text));
             });
         }
 
@@ -321,7 +321,7 @@ public class MainActivity extends Activity {
                 try {
                     c = (HttpURLConnection) new URL("https://api.github.com/repos/" + repo + "/releases/latest").openConnection();
                     c.setRequestProperty("Accept", "application/vnd.github+json");
-                    c.setRequestProperty("User-Agent", "PocketScreen-updater");
+                    c.setRequestProperty("User-Agent", "Rakerscreen-updater");
                     c.setConnectTimeout(10000);
                     c.setReadTimeout(15000);
                     int code = c.getResponseCode();
@@ -345,7 +345,7 @@ public class MainActivity extends Activity {
                 return;
             }
             if (Build.VERSION.SDK_INT >= 26 && !getPackageManager().canRequestPackageInstalls()) {
-                // one-time Android permission: "Install unknown apps" for PocketScreen
+                // one-time Android permission: "Install unknown apps" for Rakerscreen
                 runOnUiThread(() -> {
                     try {
                         startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
@@ -360,7 +360,7 @@ public class MainActivity extends Activity {
                 PackageInstaller.Session session = null;
                 try {
                     c = (HttpURLConnection) new URL(url).openConnection(); // follows GitHub's redirect to its file host
-                    c.setRequestProperty("User-Agent", "PocketScreen-updater");
+                    c.setRequestProperty("User-Agent", "Rakerscreen-updater");
                     c.setConnectTimeout(15000);
                     c.setReadTimeout(30000);
                     if (c.getResponseCode() != 200) throw new IOException("Download failed: HTTP " + c.getResponseCode());
@@ -368,7 +368,7 @@ public class MainActivity extends Activity {
                     PackageInstaller pi = getPackageManager().getPackageInstaller();
                     PackageInstaller.SessionParams p = new PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL);
                     p.setAppPackageName(getPackageName());
-                    // Android 12+: once PocketScreen installed itself, later updates may go through without a prompt
+                    // Android 12+: once Rakerscreen installed itself, later updates may go through without a prompt
                     if (Build.VERSION.SDK_INT >= 31) p.setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED);
                     int id = pi.createSession(p);
                     session = pi.openSession(id);

@@ -1,4 +1,4 @@
-/* PocketScreen panels. Each class mirrors the KlipperScreen panel of the same name (panels/*.py). */
+/* Rakerscreen panels. Each class mirrors the KlipperScreen panel of the same name (panels/*.py). */
 "use strict";
 
 const Panels = {};
@@ -203,7 +203,7 @@ Panels.move = class extends Panel {
     };
     this.adjust = Button("settings", null, "color2", { side: true, onclick: () => app.showPanel("move_options") });
     this.pos = {};
-    // tap a coordinate to type a position to move to (PocketScreen extra)
+    // tap a coordinate to type a position to move to (Rakerscreen extra)
     for (const a of ["x", "y", "z"]) {
       this.pos[a] = Button(null, `${a.toUpperCase()}: ?`, null, { onclick: () => this.enterPosition(a) });
       this.pos[a].classList.add("pos-entry");
@@ -1407,7 +1407,7 @@ Panels.system = class extends Panel {
       if (s.cpu_info) lines.push(`CPU: ${s.cpu_info.model || s.cpu_info.processor || ""} x${s.cpu_info.cpu_count || "?"}`, `Memory: ${formatSize((s.cpu_info.total_memory || 0) * 1024)}`);
       if (s.distribution) lines.push(`OS: ${s.distribution.name || ""} ${s.distribution.version || ""}`);
     } catch (e) { /* */ }
-    lines.push("", `PocketScreen ${VERSION}`, `Endpoint: ${this.mr.url()}`, `Transport: ${this.mr.native ? "native (Android)" : "browser WebSocket"}`);
+    lines.push("", `Rakerscreen ${VERSION}`, `Endpoint: ${this.mr.url()}`, `Transport: ${this.mr.native ? "native (Android)" : "browser WebSocket"}`);
     if ((si.warnings || []).length) lines.push("", "Warnings:", ...si.warnings);
     this.info.textContent = lines.join("\n");
   }
@@ -1424,7 +1424,7 @@ Panels.shutdown = class extends Panel {
     const estop = Button("emergency", "Emergency Stop", "color2", { onclick: () => app.emergencyStop() });
     const poweroff = Button("shutdown", "Shutdown", "color1", { onclick: () => this.rebootPoweroff("shutdown") });
     const restart = Button("refresh", "Restart", "color3", { onclick: () => this.rebootPoweroff("reboot") });
-    const restartKs = Button("refresh", "Restart PocketScreen", "color3", { onclick: () => location.reload() });
+    const restartKs = Button("refresh", "Restart Rakerscreen", "color3", { onclick: () => location.reload() });
     const lock = Button("lock", "Lock", "color3", { onclick: () => app.lock() });
     const items = [{ w: restartKs, x: 1, y: 0 }, { w: lock, x: 2, y: 0 }, { w: poweroff, x: 1, y: 1 }, { w: restart, x: 2, y: 1 }];
     if (showEstop) items.push({ w: estop, x: 0, y: 0, ch: 2 });
@@ -1507,7 +1507,7 @@ const shortcutChoices = (withOff) => [...(withOff ? [["off", "Off (hidden)"]] : 
   ...Object.entries(SHORTCUT_TARGETS).map(([k, v]) => [k, v.name + (v.extra ? " +" : "")])];
 const reloadCb = (app) => app.reloadPanels();
 /* KlipperScreen's configurable_options in the same order (categories appear in order of first use),
-   plus two PocketScreen extras marked as such. */
+   plus two Rakerscreen extras marked as such. */
 const KS_OPTIONS = [
   { key: "theme", cat: "Appearance", name: "Icon Theme", type: "dropdown", tip: "Changes how the interface looks",
     options: [["z-bolt", "Z-bolt (default)"], ["colorized", "colorized"], ["material-dark", "material-dark"], ["material-darker", "material-darker"], ["material-light", "material-light"]],
@@ -1538,7 +1538,7 @@ const KS_OPTIONS = [
   { key: "autoclose_popups", cat: "Behaviour", name: "Auto-close notifications", type: "binary", tip: "Close messages after a timeout" },
   { key: "show_heater_power", cat: "Appearance", name: "Show Heater Power", type: "binary", tip: "Current percentage and graph line", cb: reloadCb },
   { key: "show_scroll_steppers", cat: "Appearance", name: "Show Scrollbars Buttons", type: "binary",
-    tip: "Useful for un-responsive touchscreens (PocketScreen shows wider scrollbars)", cb: (app) => app.applyAppearance() },
+    tip: "Useful for un-responsive touchscreens (Rakerscreen shows wider scrollbars)", cb: (app) => app.applyAppearance() },
   { key: "auto_open_extrude", cat: "Printing", name: "Auto-open Extrude On Pause", type: "binary" },
   { key: "show_cursor", cat: "Appearance", name: "Show cursor", type: "binary", tip: "For mouse control or to verify touchscreen accuracy", cb: (app) => app.applyAppearance() },
   { key: "orientation", cat: "Display", name: "Screen Orientation", type: "dropdown", extra: true,
@@ -1552,7 +1552,7 @@ const KS_OPTIONS = [
   { key: "lock_password", cat: "Behaviour", name: "Lock Password", type: "entry", password: true, extra: true,
     tip: "Asked when unlocking the Lock screen. Empty: tap to unlock" },
   { key: "enable_addons", cat: "Others", name: "Enable Add-ons", type: "binary", disabled: true,
-    tip: "Runs third-party code from the addons folder at startup. Not available in PocketScreen: Android apps can't load KlipperScreen's Python add-ons" },
+    tip: "Runs third-party code from the addons folder at startup. Not available in Rakerscreen: Android apps can't load KlipperScreen's Python add-ons" },
 ];
 
 /** One settings row (ScreenPanel.add_option): binary -> switch, dropdown -> picker, entry/number -> input */
@@ -1596,7 +1596,7 @@ function optionRow(app, def) {
     return i;
   })();
   const tip = def.tip ? el("div", { class: "desc" }, def.tip.replace(/\n/g, " - ")) : null;
-  const name = el("div", { class: "title" }, def.name, def.extra ? el("span", { class: "desc" }, "  PocketScreen") : null);
+  const name = el("div", { class: "title" }, def.name, def.extra ? el("span", { class: "desc" }, "  Rakerscreen") : null);
   return el("div", { class: "opt-row" + (def.disabled ? " disabled" : "") }, el("div", { class: "grow" }, name, tip), ctl);
 }
 
@@ -1606,7 +1606,7 @@ const SETTINGS_ICONS = { Appearance: "light", Printing: "printer", Display: "inf
   Others: "hashtag", Increments: "fine-tune", "Printer Connections": "network", Language: "file", Updates: "refresh" };
 Panels.settings = class extends Panel {
   constructor(app, title) {
-    super(app, title || "PocketScreen");
+    super(app, title || "Rakerscreen");
     this.baseTitle = this.title;
     this.view = el("div", { class: "fill" });
     this.el.append(this.view);
@@ -1698,7 +1698,7 @@ Panels.settings = class extends Panel {
     const ok = icon("complete"); ok.classList.add("chev");
     this.place("Language", [
       el("div", { class: "opt-row" }, el("div", { class: "grow" }, el("div", { class: "title" }, "System language / English (en)")), ok),
-      el("div", { class: "opt-row disabled" }, el("div", { class: "grow" }, el("div", { class: "desc" }, "PocketScreen is English-only for now; KlipperScreen's translations aren't ported.")))]);
+      el("div", { class: "opt-row disabled" }, el("div", { class: "grow" }, el("div", { class: "desc" }, "Rakerscreen is English-only for now; KlipperScreen's translations aren't ported.")))]);
   }
   canGoBack() { return !!this.sub; }
   /** Self-update (update.js): installed and latest version, check / install, automatic checks. */
@@ -1715,7 +1715,7 @@ Panels.settings = class extends Panel {
     };
     const row = (title, desc, ctl) => el("div", { class: "opt-row" }, el("div", { class: "grow" }, el("div", { class: "title" }, title), desc), ctl || null);
     const rows = [
-      row("Installed version", el("div", { class: "desc" }, `PocketScreen ${VERSION}`)),
+      row("Installed version", el("div", { class: "desc" }, `Rakerscreen ${VERSION}`)),
       row("Latest release", status, action),
       optionRow(this.app, { key: "auto_update", name: "Check automatically", type: "binary",
         tip: "At startup and every 6 hours. Never interrupts a print; a failed check stays quiet" }),

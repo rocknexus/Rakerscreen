@@ -1,4 +1,4 @@
-// Minimal Moonraker simulator for developing PocketScreen without a printer.
+// Minimal Moonraker simulator for developing Rakerscreen without a printer.
 // Serves ../web over HTTP and a JSON-RPC WebSocket at /websocket on the same port.
 //   node tools/mock_moonraker.js [port]      (default 7125)
 // No dependencies: implements just enough of RFC 6455 for text frames.

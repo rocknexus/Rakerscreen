@@ -76,7 +76,7 @@ final class MiniWebSocket {
                .append("Connection: Upgrade\r\n")
                .append("Sec-WebSocket-Key: ").append(key).append("\r\n")
                .append("Sec-WebSocket-Version: 13\r\n")
-               .append("User-Agent: PocketScreen\r\n");
+               .append("User-Agent: Rakerscreen\r\n");
             if (apiKey != null && !apiKey.isEmpty()) req.append("X-Api-Key: ").append(apiKey).append("\r\n");
             req.append("\r\n");
             synchronized (writeLock) { out.write(req.toString().getBytes(StandardCharsets.UTF_8)); out.flush(); }

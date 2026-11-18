@@ -1,11 +1,13 @@
-# PocketScreen
+# Rakerscreen
 
 A KlipperScreen look-alike for Android, for phones that run the Klipper host themselves
 (Klip Pocket, Beam Klipper, Kocoa Beam). It is a native APK; no X server, VNC or second computer.
+(Formerly PocketScreen. The Android package id stays `com.pocketscreen.app`, so Rakerscreen installs
+over PocketScreen and keeps its settings.)
 
 ```
 Android phone
-  PocketScreen.apk                              Klip Pocket (Beam)
+  Rakerscreen.apk                              Klip Pocket (Beam)
   WebView UI -> PSBridge -> native WebSocket --ws://127.0.0.1:7125--> Moonraker -> Klippy
                                      (loopback, never leaves the phone)              |
                                                                   USB OTG serial (Klip Pocket)
@@ -22,31 +24,31 @@ Android phone
   with Wi‑Fi off. It is the only IPC path Klip Pocket exposes to other apps; its Unix sockets live in
   its private app sandbox and can't be opened from another app.
 - The UI is loaded from `file:///android_asset`, so the WebView's own WebSocket would send
-  `Origin: null`, which Moonraker rejects unless you edit `cors_domains`. PocketScreen instead uses a
+  `Origin: null`, which Moonraker rejects unless you edit `cors_domains`. Rakerscreen instead uses a
   small native WebSocket client (`MiniWebSocket.java`) that sends no Origin header, which Moonraker
   allows, and that can send `X-Api-Key`.
 
 ## Install
 
-1. Download the latest `PocketScreen-v*.apk` from
+1. Download the latest `Rakerscreen-v*.apk` from
    [Releases](https://github.com/rocknexus/Rakerscreen/releases/latest), open it on the phone (or run
    `adb install`), and allow "install unknown apps" for your browser or file manager.
 2. Start Klip Pocket first and let it bring Klipper up.
-3. Open PocketScreen. It connects to `127.0.0.1:7125` by default. If Klip Pocket's Moonraker uses
-   another port, tap **Menu** on the splash screen (or **More → PocketScreen** later) and change the
+3. Open Rakerscreen. It connects to `127.0.0.1:7125` by default. If Klip Pocket's Moonraker uses
+   another port, tap **Menu** on the splash screen (or **More → Rakerscreen** later) and change the
    port, then tap **Connect**. Beam's web UI is on 8888; Moonraker's default port is 7125.
 4. In Android settings, set **Battery → Unrestricted** for both apps, so Android doesn't kill Klipper
-   while PocketScreen is in the foreground.
+   while Rakerscreen is in the foreground.
 5. If Moonraker asks for authorization (the error says "Unauthorized"), either add `127.0.0.1` to
    `trusted_clients` in Klip Pocket's moonraker config or paste an API key in settings.
 
 ### Updates
 
-PocketScreen checks this repository's latest release at startup and every 6 hours (Settings →
+Rakerscreen checks this repository's latest release at startup and every 6 hours (Settings →
 Updates turns that off; it never prompts during a print). **Update** downloads the APK and opens
-Android's installer: allow "install unknown apps" for PocketScreen the first time, then confirm
+Android's installer: allow "install unknown apps" for Rakerscreen the first time, then confirm
 Android's "Update" screen. On Android 12+ later updates may install without that confirmation.
-Klipper keeps running in Klip Pocket while PocketScreen restarts. **System → Check for Updates** and
+Klipper keeps running in Klip Pocket while Rakerscreen restarts. **System → Check for Updates** and
 **Settings → Updates** check on demand.
 
 Hardware tip: many phones won't charge while their port is in OTG host mode. Use an OTG Y-cable or a
@@ -63,7 +65,7 @@ parameters), Console, Limits, Z Calibrate (probe/endstop + TESTZ), Camera (MJPEG
 System, Shutdown, Settings. Also included: action bar (back, home, notification shortcut, E-stop while
 printing), title bar temps, clock, phone battery, portrait layout, and hardware back button.
 
-Settings (More → PocketScreen) has KlipperScreen's full options list in the same categories:
+Settings (More → Rakerscreen) has KlipperScreen's full options list in the same categories:
 Appearance, Printing, Display, Behaviour, Others, Printer Connections and Language. That includes all
 five icon themes, screen power-off with DPMS (on Android it drops the backlight to minimum), wake
 delay, the lock screen, and the action bar shortcut. Two extras: a second configurable action bar
@@ -82,7 +84,7 @@ Open http://127.0.0.1:7125 in a desktop browser to work on the UI (it falls back
 WebSocket when `PSBridge` is absent).
 
 ```
-powershell -ExecutionPolicy Bypass -File build.ps1   # -> releases/PocketScreen-v<version>.apk (debug-signed)
+powershell -ExecutionPolicy Bypass -File build.ps1   # -> releases/Rakerscreen-v<version>.apk (debug-signed)
 ```
 To release a new version, bump `const VERSION` in `web/main.js`; the build derives the APK file name,
 `versionName` and `versionCode` (major*10000 + minor*100 + patch) from it.

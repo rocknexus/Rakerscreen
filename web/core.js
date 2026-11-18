@@ -1,4 +1,4 @@
-/* PocketScreen core: DOM helpers, Moonraker client, printer model, screen (base panel).
+/* Rakerscreen core: DOM helpers, Moonraker client, printer model, screen (base panel).
    Behaviour mirrors KlipperScreen (screen.py, ks_includes/printer.py, panels/base_panel.py). */
 "use strict";
 
@@ -23,7 +23,7 @@ function el(tag, attrs = {}, ...children) {
 /* Every text field uses the in-app input module (keyboard.js: Input), never Android's keyboard. */
 function prepareTextField(e, attrs) { Input.prepare(e, attrs); }
 
-/** Action bar shortcut targets: KlipperScreen's five first, then PocketScreen extras. */
+/** Action bar shortcut targets: KlipperScreen's five first, then Rakerscreen extras. */
 const SHORTCUT_TARGETS = {
   notifications: { name: "Notifications", icon: "notifications" },
   lock_screen: { name: "Lock", icon: "lock" },
@@ -173,8 +173,8 @@ const Settings = {
     language: "system_lang",
     lock_password: "",
     side_shortcut_target: "notifications",
-    side_shortcut_2: "off", // PocketScreen extra: second configurable action-bar button
-    orientation: "auto",    // PocketScreen extra: forced screen orientation (Android only)
+    side_shortcut_2: "off", // Rakerscreen extra: second configurable action-bar button
+    orientation: "auto",    // Rakerscreen extra: forced screen orientation (Android only)
     auto_update: true,      // check GitHub releases at startup and every 6 hours (update.js)
     update_skip: "",        // version the user chose to skip in the automatic prompt
     macros_grid: "auto",    // Macros panel tile grid: "auto" or "<cols>x<rows>"
