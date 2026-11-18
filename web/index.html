@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>PocketScreen</title>
+<link rel="stylesheet" href="ks.css">
+</head>
+<body>
+<div id="screen">
+  <div id="actionbar"></div>
+  <div id="titlebar">
+    <div id="title_items"></div>
+    <div id="title_label"></div>
+    <div id="title_time">00:00</div>
+    <div id="title_battery" class="hidden"><span></span><img alt=""></div>
+  </div>
+  <div id="content"></div>
+</div>
+<div id="dialog"></div>
+<div id="popup"></div>
+<div id="lock"></div>
+<div id="screensaver"></div>
+<script src="core.js"></script>
+<script src="keyboard.js"></script>
+<script src="panels.js"></script>
+<script src="update.js"></script>
+<script src="main.js"></script>
+<script>
+  // Plain ES5 on purpose: if the WebView is too old for the app's JavaScript, the scripts above fail to
+  // parse and nothing would render. Show why instead of a blank screen.
+  setTimeout(function () {
+    if (window.screenApp) return;
+    var ua = (navigator.userAgent.match(/Chrome\/[\d.]+/) || ["unknown WebView"])[0];
+    document.body.innerHTML = '<div style="padding:2em;color:#fff;background:#13181C;font:18px sans-serif;position:fixed;top:0;left:0;right:0;bottom:0">' +
+      '<h2>PocketScreen could not start</h2><p>This usually means Android System WebView is out of date (' + ua +
+      '; version 80 or newer is needed). Update "Android System WebView" or "Google Chrome" from the Play Store, then reopen the app.</p></div>';
+  }, 4000);
+</script>
+</body>
+</html>

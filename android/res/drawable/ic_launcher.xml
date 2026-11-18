@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Simple launcher icon: KlipperScreen-style orange/teal tiles on the z-bolt background. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#13181C" android:pathData="M0,0h108v108h-108z" />
+    <path android:fillColor="#ED6500" android:pathData="M22,22h28v28h-28z" />
+    <path android:fillColor="#B10080" android:pathData="M58,22h28v28h-28z" />
+    <path android:fillColor="#009384" android:pathData="M22,58h28v28h-28z" />
+    <path android:fillColor="#A7E100" android:pathData="M58,58h28v28h-28z" />
+</vector>

@@ -1,0 +1,9 @@
+# build output (APKs are attached to GitHub releases instead)
+build/
+releases/
+*.apk
+*.idsig
+
+# signing key: never commit; keep a private backup (see README "Signing key")
+*.keystore
+*.jks
