@@ -339,8 +339,9 @@ body:not(.show-cursor), body:not(.show-cursor) * { cursor: none !important; }
 /* hidden macros while editing: dimmed so they read as "off" but can still be tapped back on */
 .macro-grid .macro-tile.macro-hidden { opacity: .28; filter: grayscale(1); }
 .macro-grid .macro-tile { transition: opacity .12s; }
-.macro-edit-bar { flex: 0 0 auto; display: flex; align-items: center; gap: .2em; border-bottom: 1px solid rgba(127,127,127,.25); }
-.macro-edit-bar .opt-row { flex: 1 1 auto; min-height: 0; border: 0; padding: .1em .4em; }
+.macro-edit-bar { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: .2em; border-bottom: 1px solid rgba(127,127,127,.25); }
+.macro-edit-bar .hidden-toggle.button_active { box-shadow: inset 0 0 0 .12em var(--text); border-radius: .6em; }
+.macro-edit-bar .opt-row { flex: 0 1 auto; gap: .4em; min-height: 0; border: 0; padding: .1em .4em; }
 .macro-edit-bar > .btn { flex: 0 0 auto; }
 .macro-edit-bar .mode-switch { display: flex; flex: 0 0 auto; gap: .15em; padding: .15em; border: .1em solid var(--lines); border-radius: .6em; margin-left: .2em; }
 .macro-edit-bar .mode-switch .btn { flex: 0 0 auto; padding: .4em .7em; border-radius: .45em; }

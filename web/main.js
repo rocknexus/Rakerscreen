@@ -2,7 +2,7 @@
    title bar), dialogs and popups. Mirrors KlipperScreen screen.py + panels/base_panel.py. */
 "use strict";
 
-const VERSION = "0.3.3";
+const VERSION = "0.3.4";
 
 // Menus translated from KlipperScreen config/main_menu.conf, print_menu.conf, move_menu.conf.
 // Only panels that Rakerscreen implements are listed.
@@ -158,18 +158,18 @@ class ScreenApp {
     this.ctl.estop.classList.add("ab-keep");
     this.updateShortcuts();
   }
-  /** A panel's own action bar buttons (e.g. the Macros editor), shown instead of home and the
-      shortcuts until cleared with null. Back and E-stop stay. */
-  setPanelActions(buttons) {
+  /** A panel's own action bar buttons, until cleared with null. replace = true: they take the place of
+      home and the shortcuts (Back and E-stop stay); false: they're added after home. */
+  setPanelActions(buttons, replace = true) {
     const ab = $("#actionbar");
     if (this.panelActions) this.panelActions.remove();
     this.panelActions = null;
     const on = !!(buttons && buttons.length);
-    ab.classList.toggle("panel-actions", on);
+    ab.classList.toggle("panel-actions", on && replace);
     if (on) {
       buttons.forEach((b) => b.classList.add("ab-panel-btn"));
       this.panelActions = el("div", { class: "ab-panel" }, ...buttons);
-      ab.insertBefore(this.panelActions, this.ctl.estop);
+      ab.insertBefore(this.panelActions, replace ? this.ctl.estop : this.ctl.shortcut);
     }
     this.updateActionBar();
   }

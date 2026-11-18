@@ -1244,44 +1244,38 @@ Panels.gcode_macros = class extends Panel {
 
   /** "Hidden" toggle: whether editing also lists the hidden macros (dimmed) so they can be shown again */
   showHidden() { return !!Settings.get("macros_show_hidden"); }
-  /** The editor's controls, shown in the action bar while editing */
-  editActions() {
-    const btn = (img, label, onclick, active) => {
-      const b = Button(img, label, null, { lines: 1, onclick });
-      if (active) b.classList.add("button_active");
-      return b;
-    };
-    const nHidden = this.allMacros().filter((m) => this.hiddenSet()[m]).length;
-    return [
-      btn("edit", "Hide", () => { this.editMode = "hide"; this.render(); }, this.editMode === "hide"),
-      btn("light", "Color", () => { this.editMode = "color"; this.render(); }, this.editMode === "color"),
-      btn("archived", nHidden ? `Hidden ${nHidden}` : "Hidden", () => { Settings.set("macros_show_hidden", !this.showHidden()); this.render(); }, this.showHidden()),
-      btn("bed-mesh", (Settings.get("macros_grid") || "auto") === "auto" ? "Grid" : (Settings.get("macros_grid") || "").replace("x", "×"), () => this.pickGrid()),
-      btn("settings", "More", () => this.moreMenu()),
-    ];
+  /** Action bar button on the Macros page: Edit turns editing on, Done (highlighted) turns it off */
+  editButton() {
+    const b = Button(this.editing ? "complete" : "edit", this.editing ? "Done" : "Edit", null, { lines: 1, onclick: () => this.setEditing(!this.editing) });
+    b.classList.toggle("button_active", this.editing);
+    return b;
   }
-  pickGrid() {
-    const cur = Settings.get("macros_grid") || "auto";
-    const list = el("div", { class: "choice-list cols3" });
-    let close = () => {};
-    for (const [k, name] of MACRO_GRID_SIZES) {
-      const b = Button(null, name, k === cur ? "button_active" : null, { lines: 1, onclick: () => { close(); Settings.set("macros_grid", k); this.render(); } });
-      list.append(b);
-    }
-    close = this.app.dialog("Grid size", [{ name: "Cancel", style: "dialog-error" }], list);
-  }
-  moreMenu() {
+  /** The editor's bar above the grid: tap mode, grid size, hidden macros, bulk actions, A-Z */
+  editBar() {
     const all = this.allMacros();
     const setAll = (hide) => { const h = {}; if (hide) all.forEach((m) => (h[m] = true)); Settings.set("macros_hidden", h); this.render(); };
-    const confirm = (title, text, run) => this.app.dialog(title, [
-      { name: title, style: "dialog-default", cb: run }, { name: "Cancel", style: "dialog-error" }], text);
-    this.app.dialog("Macros", [
-      { name: "Show all", style: "dialog-default", cb: () => setAll(false) },
-      { name: "Hide all", style: "dialog-warning", cb: () => setAll(true) },
-      { name: "Clear colors", style: "dialog-info", cb: () => confirm("Clear colors", "Remove the color from every macro?", () => { Settings.set("macros_colors", {}); this.render(); }) },
-      { name: "Sort A–Z", style: "dialog-info", cb: () => this.resetLayout() },
-      { name: "Cancel", style: "dialog-error" },
-    ], "Show all / Hide all: every macro's visibility.\nClear colors: back to the default shading.\nSort A–Z: alphabetical order, no gaps.");
+    const mode = (key, label) => {
+      const b = Button(null, label, null, { lines: 1, onclick: () => { this.editMode = key; this.render(); } });
+      b.classList.add("mode-btn");
+      b.classList.toggle("button_active", this.editMode === key);
+      return b;
+    };
+    const nHidden = all.filter((m) => this.hiddenSet()[m]).length;
+    const hiddenBtn = Button(this.showHidden() ? "complete" : "archived", `Hidden${nHidden ? ` (${nHidden})` : ""}`, null,
+      { side: true, lines: 1, onclick: () => { Settings.set("macros_show_hidden", !this.showHidden()); this.render(); } });
+    hiddenBtn.classList.add("hidden-toggle");
+    hiddenBtn.classList.toggle("button_active", this.showHidden());
+    const actions = this.editMode === "color"
+      ? [Button("cancel", "Clear colors", "color2", { side: true, lines: 1, onclick: () => this.app.dialog("Clear colors", [
+          { name: "Clear", style: "dialog-default", cb: () => { Settings.set("macros_colors", {}); this.render(); } },
+          { name: "Cancel", style: "dialog-error" }], "Remove the color from every macro?") })]
+      : [Button("complete", "Show all", "color3", { side: true, lines: 1, onclick: () => setAll(false) }),
+         Button("cancel", "Hide all", "color2", { side: true, lines: 1, onclick: () => setAll(true) })];
+    return el("div", { class: "macro-edit-bar" },
+      el("div", { class: "mode-switch" }, mode("hide", "Hide/Show"), mode("color", "Color")),
+      optionRow(this.app, { key: "macros_grid", name: "Grid", type: "dropdown", options: MACRO_GRID_SIZES, cb: () => this.render() }),
+      hiddenBtn, ...actions,
+      Button("refresh", "A–Z", "color4", { side: true, lines: 1, onclick: () => this.resetLayout() }));
   }
   /** columns x rows for n cells, the same way in every view so editing matches the normal page */
   gridSize(n, W, H) {
@@ -1299,15 +1293,18 @@ Panels.gcode_macros = class extends Panel {
     const all = this.allMacros();
     const cells = this.layoutCells();
     const dragging = !!this.drag;
-    // editing puts its controls in the action bar, so the grid keeps the normal page's size
-    this.app.setPanelActions(this.editing ? this.editActions() : null);
-    // normal page: the layout (gaps included) then the Edit tile. With "Hidden" on, editing adds the
-    // hidden macros, dimmed, after the layout so they can be shown again.
+    // the editor's bar sits above the grid; it is left out while a tile is lifted, so the grid then has
+    // exactly the normal page's size
+    if (this.editing && !dragging) this.view.append(this.editBar());
+    this.app.setPanelActions([this.editButton()], false); // Edit / Done lives in the action bar on this page
+    // with "Show hidden" on, editing adds the hidden macros, dimmed, after the layout to show them again
     const hiddenTail = this.editing && !dragging && this.showHidden() ? all.filter((m) => hidden[m]) : [];
     const W = this.view.clientWidth || this.app.content.clientWidth;
-    const H = this.view.clientHeight || this.app.content.clientHeight;
-    const { cols, rows } = this.gridSize(cells.length + 1, W, H);
-    const cellH = H / rows;
+    const barH = this.view.firstChild ? this.view.firstChild.offsetHeight : 0;
+    const fullH = this.view.clientHeight || this.app.content.clientHeight;
+    // tiles always get the normal page's size (no bar), so editing shows them as they'll appear
+    const { cols, rows } = this.gridSize(Math.max(1, cells.length), W, fullH);
+    const cellH = fullH / rows;
     const fs = this.app.fontSize;
     const showIcon = cellH >= fs * 4.6;
     const grid = el("div", { class: "macro-grid scroll" + (cellH < fs * 3.4 ? " dense" : "") + (this.editing ? " editing" : "") + (dragging ? " dragging" : "") });
@@ -1345,18 +1342,10 @@ Panels.gcode_macros = class extends Panel {
       grid.append(c);
     }
     hiddenTail.forEach((m, i) => grid.append(tile(m, cells.length + i)));
-    if (!dragging) {
-      // the toggle: "Edit" turns editing on, "Done" (highlighted) turns it off
-      const toggle = Button(showIcon ? (this.editing ? "complete" : "edit") : null, this.editing ? "Done" : "Edit", null,
-        { onclick: () => this.setEditing(!this.editing) });
-      toggle.classList.add("macro-tile", "edit-toggle");
-      toggle.classList.toggle("on", this.editing);
-      grid.append(toggle);
-    }
     this.view.append(grid);
     const shownCount = cells.filter(Boolean).length;
-    if (!shownCount && !hiddenTail.length && !dragging) grid.prepend(el("div", { class: "label", style: { gridColumn: `1 / span ${Math.max(1, cols - 1)}` } }, all.length ? "All macros are hidden. Tap Edit to bring them back" : "No macros"));
-    this.gridInfo = { cols, rows, total: shownCount, scrolls: grid.children.length > cols * rows };
+    if (!shownCount && !hiddenTail.length && !dragging) grid.prepend(el("div", { class: "label", style: { gridColumn: `1 / span ${cols}` } }, all.length ? "All macros are hidden. Tap Edit to bring them back" : "No macros"));
+    this.gridInfo = { cols, rows, total: shownCount, scrolls: grid.children.length > cols * rows || barH > 0 };
     this.updateEditCount();
   }
   /** Tap: macros without parameters run at once (as in KlipperScreen); with parameters, ask first. */
