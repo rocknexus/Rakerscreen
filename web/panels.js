@@ -1035,10 +1035,90 @@ Panels.gcode_macros = class extends Panel {
     this.editMode = "hide"; // what a tap does while editing: "hide" (hide/show) or "color" (pick a color)
   }
   activate() { this.render(); }
-  deactivate() { if (this.editing) this.editing = false; } // leaving the panel turns the toggle off
+  deactivate() { if (this.editing) this.editing = false; this.pickedUp = null; } // leaving the panel turns the toggle off
   relayout() { this.render(); }
   hiddenSet() { return Settings.get("macros_hidden") || {}; }
-  allMacros() { return [...this.p.macros].sort((a, b) => a.localeCompare(b)); }
+  /** Every macro in the user's order (Edit → Move); macros not placed yet follow alphabetically. */
+  allMacros() {
+    const abc = [...this.p.macros].sort((a, b) => a.localeCompare(b));
+    const order = Settings.get("macros_order") || [];
+    const known = new Set(abc);
+    const placed = order.filter((m) => known.has(m));
+    const placedSet = new Set(placed);
+    return [...placed, ...abc.filter((m) => !placedSet.has(m))];
+  }
+  saveOrder(names) { Settings.set("macros_order", names); }
+  /** Move mode, tap-tap: first tap picks a macro up, the next tap on another puts it in that place. */
+  tapMove(name, tile) {
+    if (!this.pickedUp) { this.pickedUp = name; tile.classList.add("picked"); this.updateEditCount(); return; }
+    const from = this.pickedUp;
+    this.pickedUp = null;
+    if (from !== name) {
+      const order = this.allMacros().filter((m) => m !== from);
+      order.splice(order.indexOf(name) + (this.allMacros().indexOf(from) < this.allMacros().indexOf(name) ? 1 : 0), 0, from);
+      this.saveOrder(order);
+    }
+    this.render();
+  }
+  /** Move mode, drag: the tile lifts under the finger and the others make room as it passes over them. */
+  startDrag(e, tile, grid) {
+    if (this.editMode !== "move" || e.button > 0) return;
+    const start = { x: e.clientX, y: e.clientY };
+    let ghost = null, timer = null, lastY = e.clientY;
+    const rect = tile.getBoundingClientRect();
+    const off = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    const begin = () => {
+      ghost = tile.cloneNode(true);
+      ghost.classList.add("drag-ghost");
+      Object.assign(ghost.style, { width: `${rect.width}px`, height: `${rect.height}px` });
+      document.body.append(ghost);
+      tile.classList.add("drag-placeholder");
+      // keep scrolling while the finger rests near the top or bottom edge
+      timer = setInterval(() => {
+        const g = grid.getBoundingClientRect(), edge = this.app.fontSize * 2;
+        if (lastY < g.top + edge) grid.scrollTop -= 12; else if (lastY > g.bottom - edge) grid.scrollTop += 12;
+      }, 30);
+    };
+    const place = (x, y) => {
+      ghost.style.transform = `translate(${x - off.x}px, ${y - off.y}px)`;
+      const over = document.elementsFromPoint(x, y).find((n) => n !== ghost && n.classList && n.classList.contains("macro-tile") && n.parentNode === grid);
+      if (!over || over === tile) return;
+      if (over.classList.contains("edit-toggle")) { grid.insertBefore(tile, over); return; } // the Edit tile stays last
+      const r = over.getBoundingClientRect();
+      const tiles = [...grid.querySelectorAll(".macro-tile")];
+      const after = tiles.indexOf(over) > tiles.indexOf(tile);
+      // move once the finger is past the middle of the tile it covers, so tiles don't flicker back and forth
+      if (after ? (x > r.left + r.width / 2 || y > r.top + r.height * 0.75) : (x < r.left + r.width / 2 || y < r.top + r.height * 0.25)) {
+        grid.insertBefore(tile, after ? over.nextSibling : over);
+      }
+    };
+    const move = (ev) => {
+      lastY = ev.clientY;
+      if (!ghost) {
+        if (Math.hypot(ev.clientX - start.x, ev.clientY - start.y) < this.app.fontSize * 0.6) return; // still a tap
+        begin();
+      }
+      ev.preventDefault();
+      place(ev.clientX, ev.clientY);
+    };
+    const end = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+      if (!ghost) return; // a tap: the click handler takes it
+      clearInterval(timer);
+      ghost.remove();
+      tile.classList.remove("drag-placeholder");
+      this.suppressClick = true; // the click that ends a drag isn't a tap
+      setTimeout(() => (this.suppressClick = false), 0);
+      this.pickedUp = null;
+      this.saveOrder([...grid.querySelectorAll(".macro-tile[data-macro]")].map((t) => t.dataset.macro));
+      this.render();
+    };
+    window.addEventListener("pointermove", move, { passive: false });
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
+  }
   configOf(name) { return this.p.configSection(`gcode_macro ${name}`) || this.p.configSection(`gcode_macro ${name.toLowerCase()}`); }
   setHeading(sub) {
     this.title = sub ? `${this.baseTitle}: ${sub}` : this.baseTitle;
@@ -1049,7 +1129,7 @@ Panels.gcode_macros = class extends Panel {
     else this.renderGrid();
     this.app.updateActionBar();
   }
-  setEditing(on) { this.editing = on; this.render(); }
+  setEditing(on) { this.editing = on; this.pickedUp = null; this.render(); }
   /** Hide/show one macro in place: the tile just dims or brightens, nothing moves while editing. */
   toggleHidden(name, tile) {
     const h = { ...this.hiddenSet() };
@@ -1061,6 +1141,10 @@ Panels.gcode_macros = class extends Panel {
   updateEditCount() {
     if (!this.editing) return;
     const all = this.allMacros(), h = this.hiddenSet();
+    if (this.editMode === "move") {
+      this.setHeading(this.pickedUp ? `tap where ${this.pickedUp.replace(/_/g, " ")} goes` : "drag a macro, or tap one then its new place");
+      return;
+    }
     if (this.editMode === "color") {
       const n = all.filter((m) => this.colors()[m]).length;
       this.setHeading(`tap to color (${n}/${all.length} colored)`);
@@ -1093,7 +1177,12 @@ Panels.gcode_macros = class extends Panel {
       { name: "Cancel", style: "dialog-error" },
     ], pal);
   }
-  editTap(name, tile) { if (this.editMode === "color") this.pickColor(name, tile); else this.toggleHidden(name, tile); }
+  editTap(name, tile) {
+    if (this.suppressClick) return;
+    if (this.editMode === "color") this.pickColor(name, tile);
+    else if (this.editMode === "move") this.tapMove(name, tile);
+    else this.toggleHidden(name, tile);
+  }
   renderGrid() {
     this.setHeading(null);
     this.view.innerHTML = "";
@@ -1104,7 +1193,7 @@ Panels.gcode_macros = class extends Panel {
     if (this.editing) {
       const setAll = (hide) => { const h = {}; if (hide) all.forEach((m) => (h[m] = true)); Settings.set("macros_hidden", h); this.render(); };
       const mode = (key, label) => {
-        const b = Button(null, label, null, { lines: 1, onclick: () => { this.editMode = key; this.render(); } });
+        const b = Button(null, label, null, { lines: 1, onclick: () => { this.editMode = key; this.pickedUp = null; this.render(); } });
         b.classList.add("mode-btn");
         b.classList.toggle("button_active", this.editMode === key);
         return b;
@@ -1113,10 +1202,14 @@ Panels.gcode_macros = class extends Panel {
         ? [Button("cancel", "Clear colors", "color2", { side: true, lines: 1, onclick: () => this.app.dialog("Clear colors", [
             { name: "Clear", style: "dialog-default", cb: () => { Settings.set("macros_colors", {}); this.render(); } },
             { name: "Cancel", style: "dialog-error" }], "Remove the color from every macro?") })]
+        : this.editMode === "move"
+        ? [Button("refresh", "Sort A–Z", "color2", { side: true, lines: 1, onclick: () => this.app.dialog("Sort A–Z", [
+            { name: "Sort", style: "dialog-default", cb: () => { Settings.set("macros_order", []); this.pickedUp = null; this.render(); } },
+            { name: "Cancel", style: "dialog-error" }], "Put every macro back in alphabetical order?") })]
         : [Button("complete", "Show all", "color3", { side: true, lines: 1, onclick: () => setAll(false) }),
            Button("cancel", "Hide all", "color2", { side: true, lines: 1, onclick: () => setAll(true) })];
       const bar = el("div", { class: "macro-edit-bar" },
-        el("div", { class: "mode-switch" }, mode("hide", "Hide/Show"), mode("color", "Color")),
+        el("div", { class: "mode-switch" }, mode("hide", "Hide/Show"), mode("color", "Color"), mode("move", "Move")),
         optionRow(this.app, { key: "macros_grid", name: "Grid size", type: "dropdown", options: MACRO_GRID_SIZES, cb: () => this.render() }),
         ...actions);
       this.view.append(bar);
@@ -1143,6 +1236,12 @@ Panels.gcode_macros = class extends Panel {
         onclick: (e, btn) => (this.editing ? this.editTap(m, btn) : this.runMacro(m, btn)),
       });
       b.classList.add("macro-tile");
+      b.dataset.macro = m;
+      if (this.editing && this.editMode === "move") {
+        b.classList.add("movable");
+        if (this.pickedUp === m) b.classList.add("picked");
+        b.addEventListener("pointerdown", (e) => this.startDrag(e, b, grid));
+      }
       if (colors[m]) paintTile(b, colors[m]);
       if (this.editing && hidden[m]) b.classList.add("macro-hidden");
       grid.append(b);
