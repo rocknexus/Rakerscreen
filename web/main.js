@@ -18,7 +18,7 @@ const MENUS = {
   ],
   "__main more": [
     { key: "zoffset", name: "Z Calibrate", icon: "z-farther", panel: "zcalibrate" },
-    { key: "limits", name: "Limits", icon: "fine-tune", panel: "limits" },
+    { key: "limits", name: "Limits", icon: "gauge-redline", panel: "limits" },
     { key: "fan", name: "Fan", icon: "fan", panel: "fan", enable: (p) => p.fans > 0 },
     { key: "led", name: "Leds", icon: "light", panel: "led", enable: (p) => p.leds > 0 },
     { key: "macros", name: "Macros", icon: "custom-script", panel: "gcode_macros", enable: (p) => p.gcode_macros > 0 },
@@ -40,7 +40,7 @@ const MENUS = {
     { key: "notifications", name: "Notifications", icon: "notifications", panel: "notifications" },
     { key: "camera", name: "Camera", icon: "camera", panel: "camera", enable: () => screenApp.webcams.length > 0 },
     { key: "console", name: "Console", icon: "console", panel: "console" },
-    { key: "limits", name: "Limits", icon: "fine-tune", panel: "limits" },
+    { key: "limits", name: "Limits", icon: "gauge-redline", panel: "limits" },
     { key: "settings", name: "Rakerscreen", icon: "settings", panel: "settings" },
     { key: "system", name: "System", icon: "info", panel: "system", enable: () => screenApp.mr.connected },
     { key: "lock", name: "Lock", icon: "lock", method: "lock_screen" },

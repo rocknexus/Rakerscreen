@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <g fill="none" stroke-linecap="round">
+    <!-- dial: 240° arc from lower left round to lower right -->
+    <path d="M13.6 47.8 A24 24 0 1 1 50.4 47.8" stroke="#eee8d5" stroke-width="3"/>
+    <!-- redline zone at the top end of the dial -->
+    <path d="M52.8 22.6 A24 24 0 0 1 50.4 47.8" stroke="#e53935" stroke-width="5"/>
+    <!-- ticks -->
+    <g stroke="#eee8d5" stroke-width="2.5">
+      <path d="M17.4 44.3 l3.4 -2.4"/><path d="M12.5 30.2 l4 .6"/><path d="M18.3 17.6 l2.9 2.8"/>
+      <path d="M31.4 11 l.1 4"/><path d="M44.8 16.9 l-2.6 3.1"/>
+    </g>
+    <!-- needle pointing into the red -->
+    <path d="M32 35.5 L50 31" stroke="#e53935" stroke-width="3.5"/>
+  </g>
+  <circle cx="32" cy="35.5" r="4" fill="#eee8d5"/>
+</svg>
