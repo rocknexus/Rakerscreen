@@ -482,8 +482,7 @@ Panels.heat_sync = class extends Panel {
     this.left = el("div", { class: "hs-left scroll" });
     this.canvas = el("canvas", { class: "hs-chart" });
     this.info = el("div", { class: "hs-info" });
-    this.legend = el("div", { class: "hs-legend" }, ...Object.values(HS_PHASES).map(([n, c]) => el("span", {}, el("i", { style: { background: c.replace(/[\d.]+\)$/, ".8)") } }), n)),
-      el("span", {}, el("i", { style: { background: "#f0a028" } }), "T′"), el("span", {}, el("i", { style: { background: "#b77cf0" } }), "T″"));
+    this.legend = this.legendEl(() => this.renderRight());
     this.right = el("div", { class: "hs-right" }, this.legend, this.canvas, this.info);
     this.body = el("div", { class: "hs-body fill" }, this.left, this.right);
     const model = Button("fine-tune", "Model", "color3", { side: true, lines: 1, onclick: () => this.openModel() });
@@ -563,6 +562,35 @@ Panels.heat_sync = class extends Panel {
     this.render();
     this.app.updateActionBar();
   }
+  // ------------------------------------------------------------ the predicted run (toggle in the chart legend)
+  predOn() { return !!Settings.get("hs_predict"); }
+  /** Chart legend with the Predicted toggle; onChange redraws whichever view it's in. */
+  legendEl(onChange) {
+    const on = this.predOn();
+    const toggle = el("span", { class: "hs-pred-toggle" + (on ? " on" : ""), onclick: () => { Settings.set("hs_predict", !this.predOn()); onChange(); } },
+      el("i", { style: { background: "#7ee06a" } }), `${on ? "☑" : "☐"} Predicted`);
+    const box = el("div", { class: "hs-legend" }, ...Object.values(HS_PHASES).map(([n, c]) => el("span", {}, el("i", { style: { background: c.replace(/[\d.]+\)$/, ".8)") } }), n)),
+      el("span", {}, el("i", { style: { background: "#f0a028" } }), "T′"), el("span", {}, el("i", { style: { background: "#b77cf0" } }), "T″"), toggle);
+    box.syncToggle = () => { const o = this.predOn(); toggle.classList.toggle("on", o); toggle.lastChild.textContent = `${o ? "☑" : "☐"} Predicted`; };
+    return box;
+  }
+  /** What the heater's current model (saved on the Model page, else measured) says this run should look like:
+      {T, reach (s, or -1: never), source} on a 1 s grid, len seconds long; null without a model. */
+  predFor(r, len) {
+    const m = HeatSync.model(r.heater);
+    if (!m) return null;
+    const c = HeatSync.curve(m, r.T0, r.target, Math.max(2, Math.round(len)));
+    return { T: c.T, reach: c.T.findIndex((v) => v >= r.target), source: m.custom ? "saved model" : `measured model (${m.n} run${m.n === 1 ? "" : "s"})` };
+  }
+  /** Rows for the info card: predicted time to target vs this run. */
+  predRows(r, pred, f) {
+    if (!pred) return [["Predicted", "no model for this heater yet"]];
+    const p = pred.reach >= 0 ? fmtSecs(pred.reach) : "never (target above the ceiling)";
+    const rows = [["Predicted to target", p], ["Prediction from", pred.source]];
+    if (pred.reach >= 0 && r.tReach !== null) rows.push(["Real − predicted", `${r.tReach - pred.reach >= 0 ? "+" : "−"}${fmtSecs(Math.abs(r.tReach - pred.reach))}`]);
+    return rows;
+  }
+
   canGoBack() { return !!this.mView || !!this.tView; }
   back() {
     if (this.mView) { this.closeModel(); return true; }
@@ -673,6 +701,13 @@ Panels.heat_sync = class extends Panel {
           else if (d1now > 0.01) eta = (T.target - Tn) / d1now;
         }
         if (eta !== null && isFinite(eta)) kv.push(["To target", `about ${fmtSecs(eta)}`]);
+        if (this.predOn()) {
+          // where the current model says it should be by now, and when it should arrive
+          const pr = this.predFor(r, 3600), t = Math.round((r.T.length - 1) * r.step);
+          if (pr) kv.push(["Predicted", ""], ["Should be at", `${f(pr.T[Math.min(t, pr.T.length - 1)], 1, " °C")} (now ${f(Tn, 1, "")})`],
+            ["Predicted to target", pr.reach >= 0 ? `${fmtSecs(pr.reach)} (${pr.reach > t ? "in " + fmtSecs(pr.reach - t) : "due already"})` : "never"], ["From", pr.source]);
+          else kv.push(["Predicted", "no model for this heater yet"]);
+        }
         // the two-lag fit to the data so far, every 5 s once there's something to fit
         if (T.set && r.T.length >= 20 && (!T.liveFitAt || now - T.liveFitAt >= 5)) { T.liveFit = HeatSync.fit(r); T.liveFitAt = now; }
         const p = T.liveFit;
@@ -710,13 +745,16 @@ Panels.heat_sync = class extends Panel {
             el("div", { class: "hs-kv" }, ...kv.flatMap(([k, v]) => (v === "" ? [el("span", { class: "hs-kv-head" }, k), el("b", {}, "")] : [el("span", {}, k), el("b", {}, v)]))),
             T.note ? el("div", { class: "desc", style: { marginTop: ".3em" } }, T.note) : null,
             T.state === "done" && T.result ? el("div", { class: "desc", style: { marginTop: ".3em" } }, "Added to the recorded heat-ups (marked Test).") : null)),
-        el("div", { class: "hs-right" }, this.legend.cloneNode(true), canvas)));
+        el("div", { class: "hs-right" }, this.legendEl(() => this.renderTest()), canvas)));
     const newLeft = V.querySelector(".hs-left");
     if (newLeft) newLeft.scrollTop = keepScroll;
     if (r) {
       const p = T.state === "running" ? T.liveFit : T.fit;
       const ov = p ? HeatSync.curve(p, r.T0, r.target, HeatSync.realCurve(r).length) : null;
-      requestAnimationFrame(() => this.draw(r, ov, canvas));
+      // while it runs, widen the time axis to where the prediction reaches the target (plus some hold)
+      const pred = this.predOn() ? this.predFor(r, 3600) : null;
+      const span = T.state === "running" && pred && pred.reach >= 0 ? Math.min(3600, pred.reach * 1.25 + 20) : 0;
+      requestAnimationFrame(() => this.draw(r, ov, canvas, { pred, span }));
     }
   }
   /** Set one variable; velocity/acceleration go through fromVA (they set τ and τs). */
@@ -914,13 +952,18 @@ Panels.heat_sync = class extends Panel {
       ["T∞ full power", f(r.tinf, 0, " °C")], ["To target", r.tReach !== null ? fmtSecs(r.tReach) : "not reached"], ["Overshoot", f(r.overshoot, 1, " °C")],
     ];
     if (r.r2 !== undefined) kv.push(["Fit R²", f(r.r2, 3, "")]);
+    this.legend.syncToggle();
+    const pred = this.predOn() ? this.predFor(r, HeatSync.realCurve(r).length) : null;
+    if (this.predOn()) kv.push(...this.predRows(r, pred, f));
     this.info.append(el("div", { class: "hs-kv" }, ...kv.flatMap(([k, v]) => [el("span", {}, k), el("b", {}, v)])));
     if (r.note) this.info.append(el("div", { class: "desc" }, r.note));
-    requestAnimationFrame(() => this.draw(r));
+    requestAnimationFrame(() => this.draw(r, null, null, { pred }));
   }
   /** Temperature on top, T′ and T″ (each on its own scale) below, phases shaded.
-      ov: a model curve {T, d1, d2} (1 s grid) drawn dashed over the real run. */
-  draw(r, ov, canvas) {
+      ov: a model curve {T, d1, d2} (1 s grid) drawn dashed over the real run.
+      extra.pred: the predicted run {T} from the heater's current model, drawn dotted green;
+      extra.span: seconds the time axis covers (longer than the run: room for the prediction ahead of a running test). */
+  draw(r, ov, canvas, extra = {}) {
     const c = canvas || this.canvas, box = c.getBoundingClientRect();
     if (box.width < 20 || box.height < 20) return;
     const dpr = window.devicePixelRatio || 1;
@@ -937,11 +980,18 @@ Panels.heat_sync = class extends Panel {
     const T = r.T.slice(0, keep), n = T.length, step = r.step, dur = (n - 1) * step;
     const { d1, d2 } = HeatSync.derive(T.flatMap((v, i) => (i < n - 1 && step > 1 ? Array.from({ length: step }, (_, k) => v + ((T[i + 1] - v) * k) / step) : [v])));
     const gx = fs * 3.2, gw = W - gx - fs * 0.8, topH = H * 0.58, gy = fs * 0.6, gh = topH - gy - fs * 1.4, by = topH + fs * 0.4, bh = H - by - fs * 1.6;
-    const X = (t) => gx + (gw * t) / Math.max(1, dur);
+    const span = Math.max(dur, extra.span || 0), pred = extra.pred;
+    const X = (t) => gx + (gw * t) / Math.max(1, span);
     // phases
     for (const [p, a, b] of r.phases || []) { if (a >= dur) continue; g.fillStyle = HS_PHASES[p][1]; g.fillRect(X(a), gy, Math.max(1, X(Math.min(b, dur)) - X(a)), H - gy - fs * 1.6); }
     // temperature
     const lo = Math.min(r.T0, ...T) - 2, hi = Math.max(r.target, ...T) + 2, Y = (v) => gy + gh - ((v - lo) / (hi - lo)) * gh;
+    if (pred) {
+      // the predicted run first, so the real one is drawn on top of it
+      g.strokeStyle = "#7ee06a"; g.lineWidth = 2.5; g.setLineDash([2, 4]); g.lineCap = "round"; g.beginPath();
+      for (let i = 0; i <= Math.min(span, pred.T.length - 1); i++) { const y = Math.max(gy, Math.min(gy + gh, Y(pred.T[i]))); i ? g.lineTo(X(i), y) : g.moveTo(X(0), y); }
+      g.stroke(); g.setLineDash([]); g.lineCap = "butt";
+    }
     g.strokeStyle = "rgba(127,127,127,.35)"; g.lineWidth = 1; g.fillStyle = text; g.textAlign = "right"; g.textBaseline = "middle";
     for (let k = 0; k <= 4; k++) { const v = lo + ((hi - lo) * k) / 4, y = Y(v); g.beginPath(); g.moveTo(gx, y); g.lineTo(gx + gw, y); g.stroke(); g.fillText(v.toFixed(0), gx - 4, y); }
     g.setLineDash([6, 4]); g.strokeStyle = "#e53935"; g.beginPath(); g.moveTo(gx, Y(r.target)); g.lineTo(gx + gw, Y(r.target)); g.stroke(); g.setLineDash([]);
@@ -974,7 +1024,7 @@ Panels.heat_sync = class extends Panel {
     g.fillStyle = text; g.textAlign = "right"; g.fillText("0", gx - 4, Z);
     // time axis
     g.textAlign = "center"; g.textBaseline = "top";
-    const tick = dur > 900 ? 300 : dur > 300 ? 60 : dur > 120 ? 30 : 10;
-    for (let t = 0; t <= dur; t += tick) g.fillText(fmtSecs(t), X(t), H - fs * 1.4);
+    const tick = span > 900 ? 300 : span > 300 ? 60 : span > 120 ? 30 : 10;
+    for (let t = 0; t <= span; t += tick) g.fillText(fmtSecs(t), X(t), H - fs * 1.4);
   }
 };
