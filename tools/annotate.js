@@ -17,7 +17,7 @@
   #ann-bar button { border: 0; border-radius: 22px; padding: 10px 14px; background: #e8a33d; color: #111; font: inherit; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,.5); cursor: pointer; }
   #ann-bar button.on { background: #ff5a36; color: #fff; }
   #ann-bar button.sec { background: #2c3440; color: #eee; }
-  #ann-bar button[title] { cursor: grab; touch-action: none; padding: 10px 10px; }
+  #ann-bar button.grip { cursor: grab; touch-action: none; padding: 10px 10px; }
   #ann-shield { position: fixed; inset: 0; z-index: 1990; cursor: crosshair; background: rgba(255,90,54,.07); outline: 3px dashed #ff5a36; outline-offset: -3px; }
   #ann-hint { position: fixed; top: 8px; left: 50%; transform: translateX(-50%); z-index: 2001; background: #ff5a36; color: #fff; padding: 6px 12px; border-radius: 14px; font: 600 14px system-ui, sans-serif; pointer-events: none; }
   .ann-pin { position: fixed; z-index: 1995; width: 28px; height: 28px; margin: -14px 0 0 -14px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); background: #ff5a36; border: 2px solid #fff; box-shadow: 0 2px 6px rgba(0,0,0,.6); cursor: pointer; display: flex; align-items: center; justify-content: center; }
@@ -165,7 +165,7 @@
   }
   const point = make("button", { textContent: "📍 Point", onclick: () => setPointing(!pointing) });
   const count = make("button", { className: "sec", textContent: "Notes (0)", onclick: list });
-  const grip = make("button", { className: "sec", textContent: "⠿", title: "Drag to move" });
+  const grip = make("button", { className: "sec grip", textContent: "⠿", title: "Drag to move" });
   const bar = make("div", { id: "ann-bar" }, grip, count, point);
   document.body.append(bar);
   // drag the grip to move the buttons out of the way; the spot is remembered
@@ -184,6 +184,16 @@
     };
     grip.addEventListener("pointermove", move); grip.addEventListener("pointerup", up);
   });
+
+  // F toggles pointing, Esc cancels it or closes a note (not while typing in a field)
+  addEventListener("keydown", (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const t = e.target, typing = t && (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.isContentEditable);
+    if (typing) return;
+    if (e.key === "f" || e.key === "F") { e.preventDefault(); e.stopPropagation(); setPointing(!pointing); }
+    else if (e.key === "Escape" && (pointing || box)) { e.preventDefault(); e.stopPropagation(); if (pointing) setPointing(false); else closeBox(); }
+  }, true);
+  point.title = "Point (F)";
 
   // follow panel changes and window size; pick up replies
   let lastPanel = null;
