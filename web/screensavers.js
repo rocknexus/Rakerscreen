@@ -81,7 +81,20 @@ const Screensavers = {
 };
 
 // ================================================================= Pipes: pipes grow through a 3D grid, turning at random
+Screensavers.configs.pipes = {
+  title: "Pipes", store: "ss_pipes",
+  fields: [
+    ["Speed", "speed", [[3, "Slow"], [7.5, "Normal"], [14, "Fast"], [24, "Very fast"]], 7.5],
+    ["Pipes at once", "count", [[1, "1"], [2, "2"], [3, "3"], [5, "5"], ["random", "Random"]], "random"],
+    ["Joints", "joints", [["random", "Random"], ["balls", "Balls"], ["elbows", "Plain"]], "random"],
+    ["Pipe thickness", "radius", [[0.12, "Thin"], [0.18, "Normal"], [0.26, "Thick"]], 0.18],
+    ["Grid", "grid", [[6, "Small"], [9, "Medium"], [13, "Large"]], 9],
+    ["Fill before starting over", "fill", [[0.25, "25%"], [0.45, "45%"], [0.7, "70%"]], 0.45],
+    ["Colours", "colors", [["mixed", "Mixed"], ["warm", "Warm"], ["cool", "Cool"], ["metal", "Metal"]], "mixed"],
+  ],
+};
 Screensavers.savers.pipes = (host, app) => {
+  const o = Screensavers.options("pipes");
   const { c, fit } = Screensavers.canvas(host);
   // the colour and depth buffers are kept between frames: each frame only draws what grew, like the old savers did
   const gl = c.getContext("webgl", { preserveDrawingBuffer: true, antialias: true, alpha: false });
@@ -149,8 +162,14 @@ Screensavers.savers.pipes = (host, app) => {
 
   // ---- the scene
   const DIRS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
-  const COLORS = [[0.85, 0.12, 0.1], [0.1, 0.55, 0.9], [0.15, 0.75, 0.25], [0.95, 0.75, 0.1], [0.75, 0.2, 0.85], [0.1, 0.8, 0.8], [0.95, 0.45, 0.1], [0.8, 0.8, 0.82]];
-  const R = 0.18; // pipe radius in grid cells
+  const PALETTES = {
+    mixed: [[0.85, 0.12, 0.1], [0.1, 0.55, 0.9], [0.15, 0.75, 0.25], [0.95, 0.75, 0.1], [0.75, 0.2, 0.85], [0.1, 0.8, 0.8], [0.95, 0.45, 0.1], [0.8, 0.8, 0.82]],
+    warm: [[0.85, 0.12, 0.1], [0.95, 0.45, 0.1], [0.95, 0.75, 0.1], [0.8, 0.25, 0.4]],
+    cool: [[0.1, 0.55, 0.9], [0.1, 0.8, 0.8], [0.15, 0.75, 0.25], [0.45, 0.3, 0.9]],
+    metal: [[0.8, 0.8, 0.82], [0.72, 0.55, 0.3], [0.75, 0.45, 0.3], [0.55, 0.58, 0.62]],
+  };
+  const COLORS = PALETTES[o.colors] || PALETTES.mixed;
+  const R = o.radius; // pipe radius in grid cells
   let NX, NY, NZ, used, pipes, segs, view, world, eye, joints, wait, speed;
   const cellKey = (p) => (p[0] * NY + p[1]) * NZ + p[2];
   const inside = (p) => p[0] >= 0 && p[1] >= 0 && p[2] >= 0 && p[0] < NX && p[1] < NY && p[2] < NZ;
@@ -195,11 +214,11 @@ Screensavers.savers.pipes = (host, app) => {
   const reset = () => {
     fit();
     const asp = c.width / c.height;
-    NY = 9; NZ = 9; NX = Math.max(9, Math.round(NY * asp));
+    NY = o.grid; NZ = o.grid; NX = Math.max(o.grid, Math.round(NY * asp));
     used = new Uint8Array(NX * NY * NZ);
     segs = 0; wait = 0;
-    joints = Math.random() < 0.5 ? "balls" : "elbows";
-    speed = 6 + Math.random() * 3; // cells per second
+    joints = o.joints === "random" ? (Math.random() < 0.5 ? "balls" : "elbows") : o.joints;
+    speed = o.speed * (0.85 + Math.random() * 0.3); // cells per second
     gl.viewport(0, 0, c.width, c.height);
     const dist = NY * 1.55;
     eye = [0, 0, dist];
@@ -214,12 +233,12 @@ Screensavers.savers.pipes = (host, app) => {
     gl.clearColor(0, 0, 0, 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     pipes = [];
-    const n = 1 + Math.floor(Math.random() * 3);
+    const n = o.count === "random" ? 1 + Math.floor(Math.random() * 3) : o.count;
     for (let k = 0; k < n; k++) { const p = newPipe(); if (p) pipes.push(p); }
   };
   reset(); // no face culling: the cylinders are open-ended and their insides show at the ends
 
-  const limit = () => Math.floor(NX * NY * NZ * 0.45);
+  const limit = () => Math.floor(NX * NY * NZ * o.fill);
   const stop = Screensavers.loop((dt) => {
     if (fit()) { reset(); return; }
     if (wait > 0) { wait -= dt; if (wait <= 0) reset(); return; }
@@ -253,23 +272,35 @@ Screensavers.savers.pipes = (host, app) => {
 };
 
 // ================================================================= Starfield: flying through stars
+Screensavers.configs.starfield = {
+  title: "Starfield", store: "ss_starfield",
+  fields: [
+    ["Speed", "speed", [[0.15, "Slow"], [0.35, "Normal"], [0.8, "Fast"], [1.6, "Warp"]], 0.35],
+    ["Stars", "count", [[150, "Few"], [400, "Normal"], [900, "Many"]], 400],
+    ["Trails", "trail", [[0.7, "Short"], [0.35, "Normal"], [0.12, "Long"]], 0.35],
+    ["Colour", "color", [["white", "White"], ["blue", "Blue"], ["warm", "Warm"], ["rainbow", "Rainbow"]], "white"],
+  ],
+};
 Screensavers.savers.starfield = (host) => {
+  const o = Screensavers.options("starfield");
   const { c, fit } = Screensavers.canvas(host, 1);
   const g = c.getContext("2d");
-  const N = 400, stars = [];
-  const spawn = (s, far) => { s.x = (Math.random() - 0.5) * 2; s.y = (Math.random() - 0.5) * 2; s.z = far ? 1 : Math.random(); s.pz = s.z; return s; };
+  const N = o.count, stars = [];
+  const tint = (s, b) => (o.color === "blue" ? `rgba(150,190,255,${b})` : o.color === "warm" ? `rgba(255,200,140,${b})`
+    : o.color === "rainbow" ? `hsla(${s.h},90%,70%,${b})` : `rgba(255,255,255,${b})`);
+  const spawn = (s, far) => { s.x = (Math.random() - 0.5) * 2; s.y = (Math.random() - 0.5) * 2; s.z = far ? 1 : Math.random(); s.pz = s.z; s.h = Math.random() * 360; return s; };
   for (let i = 0; i < N; i++) stars.push(spawn({}, false));
   const stop = Screensavers.loop((dt) => {
     fit();
     const W = c.width, H = c.height, cx = W / 2, cy = H / 2, k = Math.max(W, H) * 0.5;
-    g.fillStyle = "rgba(0,0,0,.35)"; g.fillRect(0, 0, W, H);
+    g.fillStyle = `rgba(0,0,0,${o.trail})`; g.fillRect(0, 0, W, H);
     for (const s of stars) {
-      s.pz = s.z; s.z -= dt * 0.35;
+      s.pz = s.z; s.z -= dt * o.speed;
       if (s.z <= 0.02) { spawn(s, true); continue; }
       const x = cx + (s.x / s.z) * k, y = cy + (s.y / s.z) * k, px = cx + (s.x / s.pz) * k, py = cy + (s.y / s.pz) * k;
       if (x < 0 || y < 0 || x > W || y > H) { spawn(s, true); continue; }
       const b = Math.min(1, (1 - s.z) * 1.4);
-      g.strokeStyle = `rgba(255,255,255,${b})`; g.lineWidth = Math.max(1, (1 - s.z) * 3);
+      g.strokeStyle = tint(s, b); g.lineWidth = Math.max(1, (1 - s.z) * 3);
       g.beginPath(); g.moveTo(px, py); g.lineTo(x, y); g.stroke();
     }
   });
@@ -277,11 +308,23 @@ Screensavers.savers.starfield = (host) => {
 };
 
 // ================================================================= Ribbons: two bouncing outlines leaving trails
+Screensavers.configs.ribbons = {
+  title: "Ribbons", store: "ss_ribbons",
+  fields: [
+    ["Shapes", "count", [[1, "1"], [2, "2"], [3, "3"], [4, "4"]], 2],
+    ["Corners", "corners", [[3, "3"], [4, "4"], [5, "5"], [6, "6"]], 4],
+    ["Speed", "speed", [[0.15, "Slow"], [0.35, "Normal"], [0.7, "Fast"]], 0.35],
+    ["Trail", "trail", [[6, "Short"], [14, "Normal"], [28, "Long"]], 14],
+    ["Line width", "width", [[1, "Thin"], [2, "Normal"], [4, "Thick"]], 2],
+    ["Colour change", "hue", [[0, "Off"], [12, "Slow"], [45, "Fast"]], 12],
+  ],
+};
 Screensavers.savers.ribbons = (host) => {
+  const o = Screensavers.options("ribbons");
   const { c, fit } = Screensavers.canvas(host, 1);
   const g = c.getContext("2d");
-  const shape = (hue) => ({ hue, pts: Array.from({ length: 4 }, () => ({ x: Math.random(), y: Math.random(), vx: (Math.random() - 0.5) * 0.35, vy: (Math.random() - 0.5) * 0.35 })), trail: [] });
-  const shapes = [shape(Math.random() * 360), shape(Math.random() * 360)];
+  const shape = (hue) => ({ hue, pts: Array.from({ length: o.corners }, () => ({ x: Math.random(), y: Math.random(), vx: (Math.random() - 0.5) * o.speed, vy: (Math.random() - 0.5) * o.speed })), trail: [] });
+  const shapes = Array.from({ length: o.count }, () => shape(Math.random() * 360));
   const stop = Screensavers.loop((dt) => {
     fit();
     const W = c.width, H = c.height;
@@ -292,12 +335,12 @@ Screensavers.savers.ribbons = (host) => {
         if (p.x < 0 || p.x > 1) { p.vx = -p.vx; p.x = Math.min(1, Math.max(0, p.x)); }
         if (p.y < 0 || p.y > 1) { p.vy = -p.vy; p.y = Math.min(1, Math.max(0, p.y)); }
       }
-      s.hue = (s.hue + dt * 12) % 360;
+      s.hue = (s.hue + dt * o.hue) % 360;
       s.trail.unshift(s.pts.map((p) => [p.x * W, p.y * H]));
-      if (s.trail.length > 14) s.trail.pop();
+      if (s.trail.length > o.trail) s.trail.pop();
       s.trail.forEach((poly, i) => {
         if (i % 2) return;
-        g.strokeStyle = `hsla(${s.hue},90%,60%,${1 - i / 14})`; g.lineWidth = 2;
+        g.strokeStyle = `hsla(${s.hue},90%,60%,${1 - i / o.trail})`; g.lineWidth = o.width;
         g.beginPath(); poly.forEach(([x, y], j) => (j ? g.lineTo(x, y) : g.moveTo(x, y))); g.closePath(); g.stroke();
       });
     }
@@ -306,19 +349,34 @@ Screensavers.savers.ribbons = (host) => {
 };
 
 // ================================================================= Clock and printer status, drifting so nothing burns in
+Screensavers.configs.status = {
+  title: "Clock and printer status", store: "ss_status",
+  fields: [
+    ["Show", "show", [["all", "Clock, temps, print"], ["print", "Clock and print"], ["clock", "Clock only"]], "all"],
+    ["Seconds", "seconds", [[false, "Off"], [true, "On"]], false],
+    ["Size", "size", [[0.7, "Small"], [1, "Normal"], [1.4, "Large"], [1.9, "Huge"]], 1],
+    ["Brightness", "bright", [[0.45, "Dim"], [0.75, "Normal"], [1, "Bright"]], 0.75],
+    ["Drift", "drift", [[0.5, "Slow"], [1, "Normal"], [2.5, "Fast"]], 1],
+  ],
+};
 Screensavers.savers.status = (host, app) => {
+  const o = Screensavers.options("status");
   const box = document.createElement("div");
   box.className = "ss-status";
+  box.style.fontSize = `${o.size}em`;
+  box.style.opacity = o.bright;
   host.append(box);
-  let x = Math.random(), y = Math.random(), vx = 0.025, vy = 0.018; // fractions of the free space per second
+  let x = Math.random(), y = Math.random(), vx = 0.025 * o.drift, vy = 0.018 * o.drift; // fractions of the free space per second
   const fmt = (v) => (typeof v === "number" ? `${v.toFixed(0)}°` : "–");
   const update = () => {
     const p = app.printer, d = new Date();
-    const time = Settings.get("24htime") ? d.toTimeString().slice(0, 5) : d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const time = Settings.get("24htime") ? d.toTimeString().slice(0, o.seconds ? 8 : 5)
+      : d.toLocaleTimeString([], o.seconds ? { hour: "numeric", minute: "2-digit", second: "2-digit" } : { hour: "numeric", minute: "2-digit" });
     const lines = [`<div class="t">${time}</div>`];
+    if (o.show === "clock") { box.innerHTML = lines.join(""); return; }
     const te = p.stat("extruder", "temperature"), tb = p.stat("heater_bed", "temperature");
     const ge = p.stat("extruder", "target"), gb = p.stat("heater_bed", "target");
-    lines.push(`<div class="h">Extruder ${fmt(te)}${ge ? ` / ${fmt(ge)}` : ""} · Bed ${fmt(tb)}${gb ? ` / ${fmt(gb)}` : ""}</div>`);
+    if (o.show === "all") lines.push(`<div class="h">Extruder ${fmt(te)}${ge ? ` / ${fmt(ge)}` : ""} · Bed ${fmt(tb)}${gb ? ` / ${fmt(gb)}` : ""}</div>`);
     const state = p.stat("print_stats", "state");
     if (state === "printing" || state === "paused") {
       const prog = p.stat("display_status", "progress") || p.stat("virtual_sdcard", "progress") || 0;

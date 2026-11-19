@@ -2117,7 +2117,8 @@ function optionRow(app, def) {
             close(); Settings.set(def.key, v); b.setLabel(label()); if (def.cb) def.cb(app);
           } });
           // a choice with its own settings (screensavers) gets a gear beside it
-          const conf = def.configure && def.configure(v);
+          // only on the chosen one: settings for what is selected
+          const conf = String(v) === String(Settings.get(def.key)) && def.configure && def.configure(v);
           if (conf) list.append(el("div", { class: "choice-conf" }, ob, Button("settings", null, "choice-gear", { onclick: () => { close(); conf(app); } })));
           else list.append(ob);
         }
