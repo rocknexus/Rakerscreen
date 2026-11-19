@@ -77,7 +77,7 @@ Panels.menu = class extends Panel {
 // ================================================================= shared heater list (main_menu.py / temperature.py)
 class HeaterList {
   /** tiles: extruders and the bed become big tiles side by side above the list (temperature panel). */
-  constructor(app, { onName, onTemp, selectable, tiles }) {
+  constructor(app, { onName, onTemp, selectable, tiles, hideChips }) {
     this.app = app; this.p = app.printer;
     this.graph = new HeaterGraph(this.p);
     this.rows = {};
@@ -88,7 +88,9 @@ class HeaterList {
     this.el = el("div", { style: { display: "flex", flexDirection: "column", minHeight: 0, height: "100%" } }, this.tiles, list, this.graph.canvas);
     const devices = this.p.tempDevices().filter((d) => {
       const n = devName(d);
-      return !n.startsWith("_") && !deviceFiltered(this.p, d) && typeof this.p.stat(d, "temperature") === "number";
+      // hideChips (temperature panel) leaves out MCU/host chip sensors: nothing to set there
+      const chip = hideChips && d.startsWith("temperature_sensor ") && (/mcu|host|rpi|raspberry/i.test(n) || /temperature_(mcu|host)/.test(this.p.configSection(d).sensor_type || ""));
+      return !n.startsWith("_") && !chip && !deviceFiltered(this.p, d) && typeof this.p.stat(d, "temperature") === "number";
     }).sort();
     let listed = 0;
     for (const d of devices) {
@@ -107,6 +109,7 @@ class HeaterList {
     if (!this.tiles.children.length) this.tiles.remove();
     else this.tiles.style.gridTemplateColumns = `repeat(${this.tiles.children.length}, minmax(0, 1fr))`;
     if (tiles && !listed) list.remove();
+    if (hideChips) this.graph.only = new Set(Object.keys(this.rows));
     this.refreshVisibility();
     this.update();
   }
@@ -155,6 +158,7 @@ Panels.main_menu = class extends Panels.menu {
     this.heaters = new HeaterList(app, {
       onName: (d) => { this.heaters.graph.toggle(d); this.heaters.refreshVisibility(); },
       onTemp: (d) => this.showNumpad(d),
+      tiles: true,
     });
     this.right = el("div", { style: { minHeight: 0, minWidth: 0, display: "flex", flexDirection: "column" } }, this.scroll);
     this.layoutGrid();
@@ -313,7 +317,7 @@ Panels.temperature = class extends Panel {
     this.tempdeltas = getIncrements("temp_deltas");
     this.tempdelta = defaultIncrement("temp_deltas");
     this.showPreheat = !this.p.isPrinting();
-    this.heaters = new HeaterList(app, { onName: (d) => this.selectHeater(d), onTemp: (d) => this.showNumpad(d), tiles: true });
+    this.heaters = new HeaterList(app, { onName: (d) => this.selectHeater(d), onTemp: (d) => this.showNumpad(d), tiles: true, hideChips: true });
     this.right = el("div", { style: { minHeight: 0, minWidth: 0, display: "flex", flexDirection: "column" } });
     this.buildRight();
     this.layoutGrid();

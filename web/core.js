@@ -484,7 +484,8 @@ class HeaterGraph {
     this.canvas = el("canvas", { class: "heatergraph" });
     this.hidden = Settings.get("graph_hidden") || {};
   }
-  isShowing(dev) { return !this.hidden[dev]; }
+  /** only: optional Set of devices this graph may draw (the panel's own list). */
+  isShowing(dev) { return !this.hidden[dev] && (!this.only || this.only.has(dev)); }
   toggle(dev) { this.hidden[dev] = !this.hidden[dev]; Settings.set("graph_hidden", this.hidden); this.draw(); }
   draw() {
     const c = this.canvas, r = c.getBoundingClientRect();
