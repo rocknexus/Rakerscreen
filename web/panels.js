@@ -1799,7 +1799,7 @@ let logReqId = 0;
 const logWaiters = {};
 window.__pslog = (id, code, text) => { const w = logWaiters[id]; if (w) { delete logWaiters[id]; w(code, text); } };
 /** Last part of a Moonraker log file: native fetch in the app, plain fetch in a browser. */
-function fetchMoonrakerLog(app, name) {
+function fetchMoonrakerLog(app, name, bytes = LOG_TAIL_BYTES) {
   const key = Settings.get("moonraker_api_key") || "";
   if (window.PSBridge && PSBridge.fetchLog) {
     return new Promise((resolve, reject) => {
@@ -1810,10 +1810,10 @@ function fetchMoonrakerLog(app, name) {
         if (code === 200 || code === 206) resolve(text);
         else reject(new Error(code ? `Moonraker answered HTTP ${code}` : text || "Request failed"));
       };
-      PSBridge.fetchLog(id, Settings.get("moonraker_host"), app.mr.port(), name, key, LOG_TAIL_BYTES);
+      PSBridge.fetchLog(id, Settings.get("moonraker_host"), app.mr.port(), name, key, bytes);
     });
   }
-  const headers = { Range: `bytes=-${LOG_TAIL_BYTES}` };
+  const headers = { Range: `bytes=-${bytes}` };
   if (key) headers["X-Api-Key"] = key;
   return fetch(`${app.mr.httpBase()}/server/files/logs/${name}`, { headers, cache: "no-store" }).then((r) => {
     if (!r.ok) throw new Error(`Moonraker answered HTTP ${r.status}`);
@@ -2100,7 +2100,7 @@ function optionRow(app, def) {
 
 /* Landscape: the top level is a KlipperScreen-style button grid and each category is a two-column
    grid sized to the screen, so everything fits without scrolling. Portrait keeps a scrolling list. */
-const SETTINGS_ICONS = { Appearance: "light", Printing: "printer", Display: "info", Behaviour: "custom-script",
+const SETTINGS_ICONS = { "Heat Sync": "heat-up", Appearance: "light", Printing: "printer", Display: "info", Behaviour: "custom-script",
   Others: "hashtag", Increments: "fine-tune", "Printer Connections": "network", Language: "file", Updates: "refresh" };
 Panels.settings = class extends Panel {
   constructor(app, title) {
@@ -2124,7 +2124,7 @@ Panels.settings = class extends Panel {
     this.sub = null;
     this.setHeading(null);
     const entries = [...this.categories().map((c) => [c, () => this.showCategory(c)]),
-      ["Increments", () => this.showIncrements()],
+      ["Increments", () => this.showIncrements()], ["Heat Sync", () => this.app.showPanel("heat_sync")],
       ["Printer Connections", () => this.showConnections()], ["Language", () => this.showLanguage()],
       ["Updates", () => this.showUpdates()]];
     const btns = entries.map(([name, fn], i) => Button(SETTINGS_ICONS[name] || "settings", name, `color${(i % 4) + 1}`, { onclick: fn }));

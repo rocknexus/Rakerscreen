@@ -368,8 +368,30 @@ function fakeLog(kind) {
     lines.push("Starting Klippy...", "Args: ['/home/pi/klipper/klippy/klippy.py', '/home/pi/printer_data/config/printer.cfg']", "Git version: 'v0.12.0-420-gmock'");
     lines.push("===== Config file =====", "[printer]", "kinematics = cartesian", "max_velocity = 300", "max_accel = 3000", "=======================");
     lines.push("Loaded MCU 'mcu' 112 commands (v0.12.0 / gcc: (15:10.3-2021.07-4) 10.3.1)", "MCU 'mcu' config: ADC_MAX=4095 BUS_PINS_i2c1=PB6,PB7 CLOCK_FREQ=72000000");
-    for (let i = 0; i < 400; i++) lines.push(`Stats ${(i * 5.0).toFixed(1)}: gcodein=0  mcu: mcu_awake=0.003 mcu_task_avg=0.000010 bytes_write=${1200 + i * 31} bytes_read=${5400 + i * 87} freq=72000431 heater_bed: target=0 temp=23.8 pwm=0.000 sysload=0.12 cputime=${(i * 0.04).toFixed(3)} memavail=812344`);
-    lines.splice(200, 0, "Unknown command:\"M105\"", "!! Must home axis first: 10.000 0.000 0.000 [0.000]", "Starting heater checks for extruder");
+    const mono0 = 100;
+    lines.push(`Start printer at ${new Date(STARTED - 1900000).toString().slice(0, 24)} (${((STARTED - 1900000) / 1000).toFixed(1)} ${mono0.toFixed(1)})`);
+    // heaters: full-power first-order heating (τ, ceiling) seen through a lagging sensor, PID-ish hold
+    let seed = 7;
+    const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647 - 0.5; };
+    const mk = (tau, tinf, sensTau) => ({ tau, tinf, sensTau, h: 23, s: 23, target: 0, pwm: 0 });
+    const bed = mk(170, 118, 14), ext = mk(65, 305, 5);
+    const step = (x) => {
+      const hold = Math.max(0, (x.target - 23) / (x.tinf - 23));
+      x.pwm = x.target <= 0 ? 0 : x.s < x.target - 2 ? 1 : Math.min(1, Math.max(0, hold + 0.25 * (x.target - x.s)));
+      x.h += ((23 + (x.tinf - 23) * x.pwm) - x.h) / x.tau;
+      x.s += (x.h - x.s) / x.sensTau;
+    };
+    for (let i = 0; i < 1900; i++) {
+      if (i === 60) bed.target = 60;
+      if (i === 520) ext.target = 200;
+      if (i === 1150) { ext.target = 0; bed.target = 0; }
+      if (i === 1420) ext.target = 240;
+      step(bed); step(ext);
+      const t = (mono0 + 5 + i).toFixed(1);
+      const hs = (name, x) => `${name}: target=${x.target.toFixed(0)} temp=${(x.s + rnd() * 0.3).toFixed(1)} pwm=${x.pwm.toFixed(3)}`;
+      lines.push(`Stats ${t}: gcodein=0  mcu: mcu_awake=0.003 mcu_task_avg=0.000010 bytes_write=${1200 + i * 31} bytes_read=${5400 + i * 87} freq=72000431 ${hs("heater_bed", bed)} ${hs("extruder", ext)} sysload=0.12 cputime=${(i * 0.04).toFixed(3)} memavail=812344`);
+    }
+    lines.splice(300, 0, "Unknown command:\"M105\"", "!! Must home axis first: 10.000 0.000 0.000 [0.000]", "Starting heater checks for extruder");
     lines.push("WARNING: Extruder below minimum temp", "webhooks client 2849712: New connection");
   } else {
     lines.push(`${at(0).toISOString()} [server.py:main()] Starting Moonraker on (0.0.0.0, 7125), Hostname: mock`, "[confighelper.py] Configuration loaded");
