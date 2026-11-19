@@ -14,6 +14,7 @@ const MENUS = {
     { key: "more", name: "More", icon: "settings", submenu: "__main more" },
     { key: "print", name: "Print", icon: "printer", panel: "gcodes", enable: (p) => p.extruders > 0 },
     { key: "gcodes", name: "Gcodes", icon: "files", panel: "gcodes", enable: (p) => p.extruders === 0 },
+    { key: "main_console", name: "Console", icon: "console", panel: "console" }, // beside Print (also under More)
   ],
   "__main more": [
     { key: "zoffset", name: "Z Calibrate", icon: "z-farther", panel: "zcalibrate" },
