@@ -85,7 +85,17 @@ class Updater {
     // automatic checks never interrupt a print, and respect "Skip this version"
     let printing = false;
     try { printing = this.app.printer.isPrinting(); } catch (e) { /* not connected */ }
-    if (this.manual || (Settings.get("update_skip") !== this.latest.version && !printing)) this.offer();
+    if (this.manual) this.offer();
+    else if (Settings.get("update_skip") !== this.latest.version && !printing) this.offerWhenFree();
+  }
+  /** Background offer: never replace a dialog, lock screen or keyboard the user is in; wait until they're gone. */
+  offerWhenFree() {
+    clearTimeout(this.offerTimer);
+    const busy = document.querySelector("#dialog")?.classList.contains("show")
+      || document.querySelector("#lock")?.classList.contains("show")
+      || (this.app.vk && this.app.vk.visible());
+    if (busy) { this.offerTimer = setTimeout(() => this.offerWhenFree(), 3000); return; }
+    this.offer();
   }
   onError(msg) {
     const wasInstalling = ["downloading", "installing"].includes(this.state);
@@ -97,6 +107,7 @@ class Updater {
   }
 
   offer() {
+    clearTimeout(this.offerTimer);
     const l = this.latest;
     const notes = l.notes ? `\n\n${l.notes.length > 500 ? l.notes.slice(0, 500) + "…" : l.notes}` : "";
     const size = l.size ? `\n\nDownload: ${formatSize(l.size)}` : "";

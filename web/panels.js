@@ -1367,8 +1367,10 @@ Panels.gcode_macros = class extends Panel {
     body.append(fields);
     this.app.dialog(name.toUpperCase(), [
       { name: "Run", style: "dialog-default", cb: () => {
+        // macros named like G/M codes (M600…) take "X10", others "X=10", as in KlipperScreen
+        const gm = /^[GM]\d{1,3}$/i.test(name);
         const args = Object.entries(inputs).filter(([, i]) => i.value.trim() !== "")
-          .map(([p, i]) => `${p}=${/\s/.test(i.value.trim()) ? '"' + i.value.trim() + '"' : i.value.trim()}`);
+          .map(([p, i]) => { const v = i.value.trim(); return gm ? `${p}${v}` : `${p}=${/\s/.test(v) ? '"' + v + '"' : v}`; });
         this.gcode([name.toUpperCase(), ...args].join(" "), btn);
       } },
       { name: "Cancel", style: "dialog-error" },
@@ -1603,10 +1605,50 @@ Panels.zcalibrate = class extends Panel {
     if ("Z_ENDSTOP_CALIBRATE" in cmds && !this.p.configSection("stepper_z").endstop_pin?.includes("probe")) methods.push(["Endstop", "Z_ENDSTOP_CALIBRATE"]);
     if ("BED_MESH_CALIBRATE" in cmds && "PROBE_CALIBRATE" in cmds) { /* same as probe */ }
     if (!methods.length) { this.app.popup("No calibration method available"); return; }
-    const home = (this.p.stat("toolhead", "homed_axes") || "") !== "xyz" ? "G28\n" : "";
-    const run = (cmd) => this.gcode(`${home}${cmd}`);
+    // as KlipperScreen's start_calibration: clear offset/mesh, home, lift, move over the calibration point, then calibrate
+    const run = (cmd) => {
+      const at = this.location(!cmd.startsWith("Z_ENDSTOP_CALIBRATE"));
+      if (!at) { this.app.popup("Error: Couldn't get a position to probe"); return; }
+      const lines = ["SET_GCODE_OFFSET Z=0"];
+      if ("bed_mesh" in this.p.config) lines.push("BED_MESH_CLEAR");
+      if ((this.p.stat("toolhead", "homed_axes") || "") !== "xyz") lines.push("G28");
+      lines.push(`G91\nG0 Z${at.hop} F${at.hopSpeed * 60}`, `G90\nG0 X${+at.x.toFixed(3)} Y${+at.y.toFixed(3)} F3000`, cmd);
+      this.gcode(lines.join("\n"));
+    };
     if (methods.length === 1) run(methods[0][1]);
     else this.app.dialog("Calibrate", [...methods.map(([n, c]) => ({ name: n, style: "dialog-default", cb: () => run(c) })), { name: "Cancel", style: "dialog-error" }], "Select calibration method");
+  }
+  /** zcalibrate.py _get_calibration_location: zero reference, safe_z_home, round-bed origin, mesh centre or bed centre. */
+  location(applyProbeOffset) {
+    const cfg = (n) => this.p.configSection(n);
+    const nums = (s) => String(s).split(",").map((v) => parseFloat(v));
+    const probeName = Object.keys(this.p.config).find((k) => /^(probe|bltouch|smart_effector|probe_eddy_current\b.*|beacon|cartographer|scanner)$/.test(k));
+    const probe = probeName ? this.p.config[probeName] : {};
+    const off = applyProbeOffset ? [parseFloat(probe.x_offset) || 0, parseFloat(probe.y_offset) || 0] : [0, 0];
+    let hop = parseFloat(probe.sample_retract_dist) || 5, hopSpeed = parseFloat(probe.speed) || 15;
+    const out = (x, y) => (Number.isFinite(x) && Number.isFinite(y) ? { x, y, hop, hopSpeed } : null);
+    const mesh = cfg("bed_mesh"), safe = cfg("safe_z_home");
+    if (mesh.zero_reference_position) { const [x, y] = nums(mesh.zero_reference_position); return out(x - off[0], y - off[1]); }
+    if (safe.home_xy_position && !("Z_ENDSTOP_CALIBRATE" in this.p.availableCommands)) {
+      const [x, y] = nums(safe.home_xy_position);
+      if (safe.z_hop) hop = parseFloat(safe.z_hop) || hop;
+      if (safe.z_hop_speed) hopSpeed = parseFloat(safe.z_hop_speed) || hopSpeed;
+      return out(x, y); // KlipperScreen doesn't shift the safe-home point by the probe offset
+    }
+    if (mesh.mesh_radius || /delta/.test(cfg("printer").kinematics || "")) {
+      const [x, y] = mesh.mesh_origin ? nums(mesh.mesh_origin) : [0, 0];
+      return out(x - off[0], y - off[1]);
+    }
+    let min, max;
+    if (mesh.mesh_min && mesh.mesh_max) { min = nums(mesh.mesh_min); max = nums(mesh.mesh_max); }
+    else if (mesh.min_x && mesh.max_x) { min = [parseFloat(mesh.min_x), parseFloat(mesh.min_y)]; max = [parseFloat(mesh.max_x), parseFloat(mesh.max_y)]; }
+    if (min && max) return out((min[0] + max[0]) / 2 - off[0], (min[1] + max[1]) / 2 - off[1]);
+    const mx = parseFloat(cfg("stepper_x").position_max), my = parseFloat(cfg("stepper_y").position_max);
+    if (Number.isFinite(mx) && Number.isFinite(my)) return out(mx / 2 - off[0], my / 2 - off[1]);
+    // last resort (not in KlipperScreen): the centre of the travel range Klipper reports
+    const lo = this.p.stat("toolhead", "axis_minimum"), hi = this.p.stat("toolhead", "axis_maximum");
+    if (lo && hi) return out((lo[0] + hi[0]) / 2 - off[0], (lo[1] + hi[1]) / 2 - off[1]);
+    return null;
   }
 };
 

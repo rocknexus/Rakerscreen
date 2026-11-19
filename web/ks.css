@@ -214,6 +214,11 @@ body.kb-open .console-bar .entry { margin: .3em; padding: .5em; }
 .dialog-default { border-bottom-color: var(--color3) !important; }
 .dialog-secondary { border-bottom-color: var(--color2) !important; }
 .dialog-primary { border-bottom-color: var(--color1) !important; }
+#dialog .macro-prompt { width: 100%; display: flex; flex-direction: column; gap: .3em; position: relative; }
+#dialog .macro-prompt .prompt-close { position: absolute; top: -2.6em; right: -2.2em; width: 2.6em; height: 2.6em; }
+#dialog .macro-prompt .prompt-text { padding: .5em 2em; overflow-wrap: anywhere; }
+#dialog .macro-prompt > .btn, #dialog .macro-prompt .prompt-group .btn { padding: .8em .4em; border-bottom: .4em solid var(--color3); }
+#dialog .macro-prompt .prompt-group { display: grid; gap: .3em; }
 
 /* ---------- Popup message ---------- */
 #popup { position: fixed; left: 0; right: 0; top: 0; z-index: 60; display: none; padding: 0 .5em; }
@@ -302,6 +307,8 @@ body:not(.show-cursor), body:not(.show-cursor) * { cursor: none !important; }
 #lock .unlock { position: absolute; inset: 0; background: var(--bg); display: flex; align-items: center; justify-content: center; gap: 1em; padding: 2em; }
 #lock .unlock .entry { flex: 1 1 auto; font-size: 1.2em; padding: .5em; margin: 2em; }
 #lock .unlock .btn { padding: 2em; flex: 0 0 auto; }
+#lock .unlock-error { position: absolute; left: 0; right: 0; top: 1em; text-align: center; color: #fff; font-size: 1.2em; pointer-events: none; }
+#lock .unlock-error:not(:empty) { background: var(--error); padding: .4em; }
 
 /* Fine tuning, landscape: one horizontal row per group, step selector in the last column */
 .ft-step { display: flex; flex-direction: column; justify-content: center; min-width: 0; }

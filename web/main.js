@@ -2,7 +2,7 @@
    title bar), dialogs and popups. Mirrors KlipperScreen screen.py + panels/base_panel.py. */
 "use strict";
 
-const VERSION = "0.3.5";
+const VERSION = "0.3.6";
 
 // Menus translated from KlipperScreen config/main_menu.conf, print_menu.conf, move_menu.conf.
 // Only panels that Rakerscreen implements are listed.
@@ -278,9 +278,12 @@ class ScreenApp {
     const pass = Settings.get("lock_password") || "";
     if (!pass) { this.clearLock(); return; }
     const entry = el("input", { class: "entry", type: "password", placeholder: "Password", autocomplete: "off" });
-    const tryUnlock = () => { if (entry.value === pass) this.clearLock(); else { this.popup("Unlock failed"); entry.value = ""; } };
+    // shown inside the lock screen: the popup layer sits beneath it
+    const err = el("div", { class: "unlock-error" });
+    const tryUnlock = () => { if (entry.value === pass) this.clearLock(); else { err.textContent = "Unlock failed"; entry.value = ""; } };
     entry.addEventListener("keydown", (e) => { if (e.key === "Enter") tryUnlock(); });
-    const unlock = el("div", { class: "unlock" }, entry, Button(null, "Unlock", "color3", { onclick: tryUnlock }));
+    entry.addEventListener("input", () => { err.textContent = ""; });
+    const unlock = el("div", { class: "unlock" }, entry, Button(null, "Unlock", "color3", { onclick: tryUnlock }), err);
     unlock.addEventListener("click", (e) => e.stopPropagation());
     box.append(unlock);
     Input.open(entry);
@@ -730,6 +733,7 @@ class ScreenApp {
         if (this.gcodeLog.length > 500) this.gcodeLog.shift();
         if (text.startsWith("!! ")) this.popup(text.slice(3), 3);
         else if (text.startsWith("echo: ") && !text.startsWith("echo: action:")) this.logNotification(text.slice(6), 1);
+        if (text.startsWith("// action:")) this.processAction(text.slice(10).trim());
         for (const e of this.stack) if (e.panel.onGcodeResponse) e.panel.onGcodeResponse(text);
         break;
       }
@@ -773,6 +777,71 @@ class ScreenApp {
     else { this.popup(`Unknown Heater ${dev}`); return false; }
     this.mr.gcode(script).catch((e) => this.popup(e.message));
     return true;
+  }
+
+  // ------------------------------------------------------------ "// action:" lines (screen.py process_action)
+  processAction(action) {
+    if (action.startsWith("prompt")) {
+      if (action.startsWith("prompt_begin")) { if (this.prompt) this.prompt.end(); this.prompt = new MacroPrompt(this); }
+      if (this.prompt) this.prompt.decode(action);
+    } else if (action.startsWith("ks_show")) {
+      // ks_show <panel> [title="…"]
+      const m = action.slice(7).trim().match(/^(\S+)(?:\s+(\w+)\s*=\s*(.+))?$/);
+      if (!m) return;
+      const [, panel, key, raw] = m;
+      if (!Panels[panel]) { this.popup(`Unknown panel: ${panel}`); return; }
+      const title = key === "title" && raw ? raw.trim().replace(/^(['"])(.*)\1$/, "$2") : null;
+      this.showPanel(panel, title);
+    }
+  }
+}
+
+/** Klipper macro prompts (RESPOND type=command msg="action:prompt_…"), ks_includes/widgets/prompts.py. */
+class MacroPrompt {
+  constructor(app) { this.app = app; this.header = ""; this.text = ""; this.body = []; this.footer = []; this.groups = []; this.closeFn = null; this.root = null; }
+  decode(data) {
+    if (data.startsWith("prompt_begin")) { this.header = data.slice(12).trim(); this.text = ""; this.body = []; this.footer = []; return; }
+    if (data.startsWith("prompt_text")) { this.text = data.slice(11).trim(); return; }
+    if (data.startsWith("prompt_button_group_start")) { this.groups.push([]); return; }
+    if (data.startsWith("prompt_button_group_end")) { const g = this.groups.pop(); if (g) this.body.push({ group: g }); return; }
+    if (data.startsWith("prompt_button ") || data.startsWith("prompt_footer_button ")) {
+      const footer = data.startsWith("prompt_footer_button ");
+      const params = data.slice(footer ? 21 : 14).split("|").map((s) => s.trim());
+      if (params.length > 3) return;
+      const b = { name: params[0], gcode: params[1] || params[0], style: `dialog-${params[2] || "default"}` };
+      if (footer) this.footer.push(b);
+      else if (this.groups.length) this.groups[this.groups.length - 1].push(b);
+      else this.body.push(b);
+      return;
+    }
+    if (data === "prompt_show") { if (!this.root) this.show(); return; }
+    if (data === "prompt_end") this.end();
+  }
+  send(gcode) { this.app.mr.gcode(gcode).catch((e) => this.app.popup(e.message)); }
+  show() {
+    const btn = (b) => Button(null, b.name, b.style, { onclick: () => this.send(b.gcode) });
+    const root = el("div", { class: "macro-prompt" });
+    const x = Button("cancel", null, "color2 prompt-close", { side: true, onclick: () => this.close() });
+    root.append(x);
+    if (this.text) root.append(el("div", { class: "prompt-text" }, this.text));
+    for (const item of this.body) {
+      if (item.group) root.append(el("div", { class: "prompt-group", style: { gridTemplateColumns: `repeat(${Math.min(4, item.group.length)}, 1fr)` } }, ...item.group.map(btn)));
+      else root.append(btn(item));
+    }
+    this.root = root;
+    // footer buttons send their G-code and leave the prompt open: the macro ends it with prompt_end
+    // (a dialog without buttons closes on any tap, so a prompt without footer buttons gets a Close one)
+    const footer = this.footer.length ? this.footer.map((b) => ({ name: b.name, style: b.style, handler: () => this.send(b.gcode) }))
+      : [{ name: "Close", style: "dialog-error", handler: () => this.close() }];
+    this.closeFn = this.app.dialog(this.header || "Prompt", footer, root,
+      () => { if (this.app.prompt === this) this.app.prompt = null; this.root = null; });
+  }
+  /** The user closed it: tell Klipper, which answers with prompt_end. */
+  close() { this.send('RESPOND type="command" msg="action:prompt_end"'); this.end(); }
+  end() {
+    if (this.root && this.root.isConnected && this.closeFn) this.closeFn();
+    this.root = null;
+    if (this.app.prompt === this) this.app.prompt = null;
   }
 }
 
