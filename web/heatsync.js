@@ -166,8 +166,10 @@ const HeatSync = {
     this.save(all);
     return { found: runs.length, added: fresh.length };
   },
-  /** Medians over a heater's recorded runs that have a time constant. */
+  /** The heater's model: a saved one (Model page) if there is one, else medians over its recorded runs. */
   model(heater) {
+    const custom = (Settings.get(this.CUSTOM) || {})[heater];
+    if (custom) return { ...custom, n: 0, custom: true, rmax: this.toVA(custom, custom.tinf - 23).v };
     const runs = this.load().filter((r) => r.heater === heater && r.tau > 0 && r.tinf);
     if (!runs.length) return null;
     const med = (k) => this.median(runs.map((r) => r[k]).filter((v) => typeof v === "number"));
@@ -177,7 +179,114 @@ const HeatSync = {
   predict(m, T0, Tt) {
     if (!m || Tt <= T0) return 0;
     if (Tt >= m.tinf - 0.5) return null;
+    if (m.taus) { // two-lag model: walk the curve
+      const c = this.curve(m, T0, Infinity, 7200);
+      const i = c.T.findIndex((v) => v >= Tt);
+      return i >= 0 ? i : null;
+    }
     return m.lag + m.tau * Math.log((m.tinf - T0) / (m.tinf - Tt));
+  },
+
+  // ------------------------------------------------------------ the two-lag model (Model page)
+  /* After the lag L, full power drives the heater towards T∞ with time constant τ, and the sensor follows
+     the heater with its own, shorter, τs. With A = T∞ − T0 and u = t − L:
+       T  = T0 + A·[1 − (τ·e^(−u/τ) − τs·e^(−u/τs)) / (τ − τs)]
+       T′ = A·(e^(−u/τ) − e^(−u/τs)) / (τ − τs)               peak (velocity) v = (A/τ)·r^(r/(1−r)), r = τs/τ
+       T″ = A·(e^(−u/τs)/τs − e^(−u/τ)/τ) / (τ − τs)           peak (acceleration, at u = 0) a = A/(τ·τs)  */
+  CUSTOM: "heat_sync_models",
+  /** Model curve on a 1 s grid; once it reaches the target it holds there (an ideal PID). */
+  curve(p, T0, target, n) {
+    const T = new Array(n), d1 = new Array(n), d2 = new Array(n);
+    const A = p.tinf - T0, tau = Math.max(1, p.tau);
+    const ts = Math.min(Math.max(0.2, p.taus || 0), tau * 0.995);
+    let held = false;
+    for (let i = 0; i < n; i++) {
+      const u = i - p.lag;
+      if (held) { T[i] = target; d1[i] = 0; d2[i] = 0; continue; }
+      if (u <= 0) { T[i] = T0; d1[i] = 0; d2[i] = 0; continue; }
+      const e1 = Math.exp(-u / tau), e2 = Math.exp(-u / ts), k = tau - ts;
+      T[i] = T0 + A * (1 - (tau * e1 - ts * e2) / k);
+      d1[i] = (A * (e1 - e2)) / k;
+      d2[i] = (A * (e2 / ts - e1 / tau)) / k;
+      if (T[i] >= target) { T[i] = target; held = true; }
+    }
+    return { T, d1, d2 };
+  },
+  /** τ, τs -> peak velocity and acceleration for a rise of A. */
+  toVA(p, A) {
+    const r = Math.min(0.995, Math.max(1e-4, p.taus / p.tau));
+    return { v: (A / p.tau) * Math.pow(r, r / (1 - r)), a: A / (p.tau * p.taus) };
+  },
+  /** Peak velocity and acceleration -> τ, τs (A fixed). v²/(A·a) = r·r^(2r/(1−r)) climbs from 0 to e⁻² as r goes 0 → 1,
+      so a has a floor for a given v: below it there's no such heater, and a is raised to it (adjusted: true). */
+  fromVA(A, v, a) {
+    const h = (r) => r * Math.pow(r, (2 * r) / (1 - r));
+    const rMax = 0.995, hMax = h(rMax);
+    let want = (v * v) / (A * a), adjusted = false;
+    if (!(want < hMax)) { want = hMax * 0.999; a = (v * v) / (A * want); adjusted = true; }
+    let lo = 1e-6, hi = rMax;
+    for (let k = 0; k < 80; k++) { const mid = (lo + hi) / 2; if (h(mid) < want) lo = mid; else hi = mid; }
+    const r = (lo + hi) / 2, tau = Math.sqrt(A / (a * r));
+    return { tau, taus: r * tau, a, adjusted };
+  },
+  /** Real run on a 1 s grid (stored curves are thinned to ≤ 600 points). */
+  realCurve(r) {
+    const T = r.T, s = r.step, out = [];
+    for (let i = 0; i < T.length; i++) {
+      if (i === T.length - 1 || s === 1) { out.push(T[i]); continue; }
+      for (let k = 0; k < s; k++) out.push(T[i] + ((T[i + 1] - T[i]) * k) / s);
+    }
+    return out;
+  },
+  /** Least squares over the heat-up (up to the target) with Nelder–Mead on L, T∞, ln τ, ln τs. */
+  fit(r) {
+    const T = this.realCurve(r), n = Math.min(T.length, (r.tReach !== null ? r.tReach : T.length - 1) + 1);
+    if (n < 15) return null;
+    const T0 = r.T0, target = r.target;
+    const unpack = (x) => ({ lag: Math.max(0, x[0]), tinf: x[1], tau: Math.exp(x[2]), taus: Math.exp(x[3]) });
+    const cost = (x) => {
+      const p = unpack(x);
+      if (p.taus >= p.tau * 0.99 || p.tinf <= target + 0.5) return 1e12;
+      const c = this.curve(p, T0, Infinity, n);
+      let s = 0;
+      for (let i = 0; i < n; i++) { const d = c.T[i] - T[i]; s += d * d; }
+      return s;
+    };
+    const tau0 = r.tau || Math.max(20, (r.tReach || n) / 1.5);
+    let simplex = [[r.lag || 2, r.tinf || target + 60, Math.log(tau0), Math.log(Math.max(1, tau0 * 0.08))]];
+    const steps = [2, 15, 0.3, 0.5];
+    for (let k = 0; k < 4; k++) { const x = simplex[0].slice(); x[k] += steps[k]; simplex.push(x); }
+    let f = simplex.map(cost);
+    for (let it = 0; it < 600; it++) {
+      const ord = f.map((v, i) => i).sort((a, b) => f[a] - f[b]);
+      simplex = ord.map((i) => simplex[i]); f = ord.map((i) => f[i]);
+      if (f[4] - f[0] < 1e-6 * (1 + f[0])) break;
+      const c = [0, 1, 2, 3].map((k) => (simplex[0][k] + simplex[1][k] + simplex[2][k] + simplex[3][k]) / 4);
+      const pt = (t) => c.map((v, k) => v + t * (simplex[4][k] - v));
+      const xr = pt(-1), fr = cost(xr);
+      if (fr < f[0]) { const xe = pt(-2), fe = cost(xe); [simplex[4], f[4]] = fe < fr ? [xe, fe] : [xr, fr]; }
+      else if (fr < f[3]) { simplex[4] = xr; f[4] = fr; }
+      else {
+        const xc = pt(fr < f[4] ? -0.5 : 0.5), fc = cost(xc);
+        if (fc < Math.min(fr, f[4])) { simplex[4] = xc; f[4] = fc; }
+        else for (let i = 1; i < 5; i++) { simplex[i] = simplex[i].map((v, k) => simplex[0][k] + 0.5 * (v - simplex[0][k])); f[i] = cost(simplex[i]); }
+      }
+    }
+    const p = unpack(simplex[0]);
+    return { ...p, rms: Math.sqrt(f[0] / n) };
+  },
+  /** RMS error (°C) of a model against the real heat-up. */
+  rms(p, r) {
+    const T = this.realCurve(r), n = Math.min(T.length, (r.tReach !== null ? r.tReach : T.length - 1) + 1);
+    const c = this.curve(p, r.T0, Infinity, n);
+    let s = 0;
+    for (let i = 0; i < n; i++) s += (c.T[i] - T[i]) ** 2;
+    return Math.sqrt(s / n);
+  },
+  saveCustom(heater, p) {
+    const all = { ...(Settings.get(this.CUSTOM) || {}) };
+    if (p) all[heater] = { lag: p.lag, tinf: p.tinf, tau: p.tau, taus: p.taus }; else delete all[heater];
+    Settings.set(this.CUSTOM, all);
   },
 };
 
@@ -206,7 +315,105 @@ Panels.heat_sync = class extends Panel {
       el("span", {}, el("i", { style: { background: "#f0a028" } }), "T′"), el("span", {}, el("i", { style: { background: "#b77cf0" } }), "T″"));
     this.right = el("div", { class: "hs-right" }, this.legend, this.canvas, this.info);
     this.body = el("div", { class: "hs-body fill" }, this.left, this.right);
-    this.el.append(el("div", { class: "hs-top" }, this.heaterBar, read, clear), this.body, el("div", { class: "hs-foot" }, this.status));
+    const model = Button("fine-tune", "Model", "color3", { side: true, lines: 1, onclick: () => this.openModel() });
+    this.main = el("div", { class: "fill", style: { display: "flex", flexDirection: "column", minHeight: 0 } },
+      el("div", { class: "hs-top" }, this.heaterBar, model, read, clear), this.body, el("div", { class: "hs-foot" }, this.status));
+    this.el.append(this.main);
+  }
+
+  // ------------------------------------------------------------ Model page: edit the model, see it over the real run
+  openModel() {
+    const r = this.sel;
+    if (!r) { this.app.popup("Pick a heat-up first", 1); return; }
+    const saved = (Settings.get(HeatSync.CUSTOM) || {})[r.heater];
+    // start from the saved model, else a fit to this run, else the run's own numbers
+    this.mp = saved ? { ...saved } : HeatSync.fit(r) || { lag: r.lag || 2, tinf: r.tinf || r.target + 60, tau: r.tau || 60, taus: Math.max(1, (r.tau || 60) * 0.08) };
+    this.mNote = saved ? "Saved model" : "Fitted to this run";
+    this.main.style.display = "none";
+    this.mView = el("div", { class: "fill hs-model" });
+    this.el.append(this.mView);
+    this.renderModel();
+    this.app.updateActionBar();
+  }
+  closeModel() {
+    if (this.mView) { this.mView.remove(); this.mView = null; }
+    this.main.style.display = "flex";
+    this.render();
+    this.app.updateActionBar();
+  }
+  canGoBack() { return !!this.mView; }
+  back() { if (this.mView) { this.closeModel(); return true; } return false; }
+  deactivate() { if (this.mView) this.closeModel(); }
+  /** Set one variable; velocity/acceleration go through fromVA (they set τ and τs). */
+  setVar(key, val) {
+    const r = this.sel, p = this.mp, A = () => p.tinf - r.T0;
+    if (!isFinite(val)) return;
+    if (key === "lag") p.lag = Math.max(0, val);
+    else if (key === "tinf") {
+      // keep velocity and acceleration as they were, the new ceiling changes τ and τs
+      const va = HeatSync.toVA(p, A());
+      p.tinf = Math.max(r.target + 1, val);
+      const s = HeatSync.fromVA(A(), va.v, va.a);
+      p.tau = s.tau; p.taus = s.taus;
+    } else if (key === "v" || key === "a") {
+      const va = HeatSync.toVA(p, A());
+      va[key] = Math.max(1e-4, val);
+      const s = HeatSync.fromVA(A(), va.v, va.a);
+      p.tau = s.tau; p.taus = s.taus;
+      this.mNote = s.adjusted ? "Acceleration raised to the lowest a heater with this velocity can have" : "Edited";
+      this.renderModel();
+      return;
+    } else if (key === "tau") p.tau = Math.max(p.taus * 1.05, val);
+    else if (key === "taus") p.taus = Math.min(p.tau * 0.95, Math.max(0.2, val));
+    this.mNote = "Edited";
+    this.renderModel();
+  }
+  renderModel() {
+    const r = this.sel, p = this.mp, V = this.mView;
+    const A = p.tinf - r.T0, va = HeatSync.toVA(p, A);
+    const real = HeatSync.realCurve(r);
+    const ov = HeatSync.curve(p, r.T0, r.target, real.length);
+    const reach = ov.T.findIndex((v) => v >= r.target);
+    const rms = HeatSync.rms(p, r);
+    const name = r.heater === "heater_bed" ? "Bed" : prettify(r.heater);
+    // one editable variable: value (tap to type) and − / + steps
+    const row = (label, key, value, unit, digits, step, mult) => {
+      const val = Button(null, `${value.toFixed(digits)} ${unit}`, "hs-val", { lines: 1, onclick: () => Input.number({
+        title: label, value: Number(value.toFixed(digits)), unit, min: 0, ok: "Set", keepOpen: true,
+        desc: key === "v" || key === "a" ? `For this run's start, ${r.T0.toFixed(0)}°` : null,
+        onSubmit: (x) => this.setVar(key, x) }) });
+      const nudge = (dir) => this.setVar(key, mult ? value * (dir > 0 ? 1 + step : 1 / (1 + step)) : value + dir * step);
+      return el("div", { class: "hs-var" }, el("div", { class: "name" }, label),
+        Button(null, "−", "hs-step", { onclick: () => nudge(-1) }), val, Button(null, "+", "hs-step", { onclick: () => nudge(1) }));
+    };
+    const canvas = el("canvas", { class: "hs-chart" });
+    V.innerHTML = "";
+    V.append(
+      el("div", { class: "hs-top" },
+        el("div", { class: "hs-mtitle" }, `Model · ${name} ${r.T0.toFixed(0)}° → ${r.target}°`),
+        Button("refresh", "Fit to run", "color1", { side: true, lines: 1, onclick: () => { const f = HeatSync.fit(r); if (f) { this.mp = f; this.mNote = "Fitted to this run"; this.renderModel(); } } }),
+        Button("complete", "Save as model", "color3", { side: true, lines: 1, onclick: () => { HeatSync.saveCustom(r.heater, p); this.mNote = `Saved: ${name} predictions now use this model`; this.renderModel(); } }),
+        (Settings.get(HeatSync.CUSTOM) || {})[r.heater]
+          ? Button("delete", "Use measured", "color2", { side: true, lines: 1, onclick: () => { HeatSync.saveCustom(r.heater, null); this.mNote = "Back to the measured model"; this.renderModel(); } }) : null),
+      el("div", { class: "hs-body fill" },
+        el("div", { class: "hs-left scroll" },
+          row("Heat velocity · peak T′", "v", va.v, "°C/s", 2, 0.05, true),
+          row("Heat acceleration · peak T″", "a", va.a, "°C/s²", 3, 0.1, true),
+          row("Lag", "lag", p.lag, "s", 1, 0.5, false),
+          row("Full-power ceiling T∞", "tinf", p.tinf, "°C", 0, 2, false),
+          row("Time constant τ", "tau", p.tau, "s", 0, 0.05, true),
+          row("Sensor lag τs", "taus", p.taus, "s", 1, 0.1, true),
+          el("div", { class: "hs-card" }, el("div", { class: "hs-kv" },
+            el("span", {}, "Fit error"), el("b", {}, `${rms.toFixed(2)} °C RMS`),
+            el("span", {}, "Model to target"), el("b", {}, reach >= 0 ? fmtSecs(reach) : "never"),
+            el("span", {}, "Real to target"), el("b", {}, r.tReach !== null ? fmtSecs(r.tReach) : "not reached")),
+            el("div", { class: "desc", style: { marginTop: ".3em" } }, this.mNote || ""))),
+        el("div", { class: "hs-right" },
+          el("div", { class: "hs-legend" }, el("span", {}, el("i", { style: { background: "currentColor" } }), "Real"),
+            el("span", {}, el("i", { style: { background: "#35d0e0" } }), "Model"),
+            el("span", {}, el("i", { style: { background: "#f0a028" } }), "T′"), el("span", {}, el("i", { style: { background: "#b77cf0" } }), "T″  (model dashed)")),
+          canvas)));
+    requestAnimationFrame(() => this.draw(r, ov, canvas));
   }
   activate() {
     const runs = HeatSync.load();
@@ -214,7 +421,7 @@ Panels.heat_sync = class extends Panel {
     this.render();
     if (!HeatSync.load().length) this.readLog();
   }
-  relayout() { this.render(); }
+  relayout() { if (this.mView) this.renderModel(); else this.render(); }
   async readLog(btn) {
     if (btn) btn.busy(true);
     this.status.textContent = "Reading klippy.log…";
@@ -259,7 +466,7 @@ Panels.heat_sync = class extends Panel {
     const card = el("div", { class: "hs-card" });
     if (m) {
       const dev = this.devFor(this.heater), now = this.p.stat(dev, "temperature");
-      card.append(el("div", { class: "title" }, `${this.heater === "heater_bed" ? "Bed" : prettify(this.heater)} model · ${m.n} run${m.n === 1 ? "" : "s"}`),
+      card.append(el("div", { class: "title" }, `${this.heater === "heater_bed" ? "Bed" : prettify(this.heater)} ${m.custom ? "saved model (Model page)" : `model · ${m.n} run${m.n === 1 ? "" : "s"}`}`),
         el("div", { class: "hs-kv" },
           el("span", {}, "τ"), el("b", {}, `${m.tau.toFixed(0)} s`),
           el("span", {}, "Lag"), el("b", {}, `${m.lag.toFixed(1)} s`),
@@ -316,9 +523,10 @@ Panels.heat_sync = class extends Panel {
     if (r.note) this.info.append(el("div", { class: "desc" }, r.note));
     requestAnimationFrame(() => this.draw(r));
   }
-  /** Temperature on top, T′ and T″ (each on its own scale) below, phases shaded. */
-  draw(r) {
-    const c = this.canvas, box = c.getBoundingClientRect();
+  /** Temperature on top, T′ and T″ (each on its own scale) below, phases shaded.
+      ov: a model curve {T, d1, d2} (1 s grid) drawn dashed over the real run. */
+  draw(r, ov, canvas) {
+    const c = canvas || this.canvas, box = c.getBoundingClientRect();
     if (box.width < 20 || box.height < 20) return;
     const dpr = window.devicePixelRatio || 1;
     c.width = box.width * dpr; c.height = box.height * dpr;
@@ -344,15 +552,26 @@ Panels.heat_sync = class extends Panel {
     g.setLineDash([6, 4]); g.strokeStyle = "#e53935"; g.beginPath(); g.moveTo(gx, Y(r.target)); g.lineTo(gx + gw, Y(r.target)); g.stroke(); g.setLineDash([]);
     g.strokeStyle = text; g.lineWidth = 2; g.beginPath();
     T.forEach((v, i) => (i ? g.lineTo(X(i * step), Y(v)) : g.moveTo(X(0), Y(v)))); g.stroke();
+    if (ov) {
+      g.strokeStyle = "#35d0e0"; g.lineWidth = 2; g.setLineDash([7, 4]); g.beginPath();
+      for (let i = 0; i <= Math.min(dur, ov.T.length - 1); i++) { const y = Math.max(gy, Math.min(gy + gh, Y(ov.T[i]))); i ? g.lineTo(X(i), y) : g.moveTo(X(0), y); }
+      g.stroke(); g.setLineDash([]);
+    }
     // inflection
     g.strokeStyle = "rgba(255,255,255,.5)"; g.lineWidth = 1; g.setLineDash([2, 3]);
     g.beginPath(); g.moveTo(X(r.tInfl), gy); g.lineTo(X(r.tInfl), H - fs * 1.6); g.stroke(); g.setLineDash([]);
     // derivatives, each scaled to fit, zero line shared
-    const m1 = Math.max(1e-6, ...d1.map(Math.abs)), m2 = Math.max(1e-6, ...d2.map(Math.abs));
+    const span = (a) => (a ? a.slice(0, dur + 1).map(Math.abs) : []);
+    const m1 = Math.max(1e-6, ...d1.map(Math.abs), ...span(ov && ov.d1)), m2 = Math.max(1e-6, ...d2.map(Math.abs), ...span(ov && ov.d2));
     const Z = by + bh / 2;
     g.strokeStyle = "rgba(127,127,127,.5)"; g.beginPath(); g.moveTo(gx, Z); g.lineTo(gx + gw, Z); g.stroke();
     const plot = (d, mx, col) => { g.strokeStyle = col; g.lineWidth = 1.6; g.beginPath(); d.forEach((v, i) => { const x = X(i), y = Z - (v / mx) * (bh / 2) * 0.95; i ? g.lineTo(x, y) : g.moveTo(x, y); }); g.stroke(); };
     plot(d2, m2, "#b77cf0"); plot(d1, m1, "#f0a028");
+    if (ov) {
+      g.setLineDash([5, 4]);
+      plot(ov.d2.slice(0, dur + 1), m2, "rgba(214,170,255,.95)"); plot(ov.d1.slice(0, dur + 1), m1, "rgba(255,214,140,.95)");
+      g.setLineDash([]);
+    }
     g.fillStyle = text; g.textAlign = "right"; g.fillText("0", gx - 4, Z);
     // time axis
     g.textAlign = "center"; g.textBaseline = "top";

@@ -476,3 +476,11 @@ body.kb-open .dialog-body .desc { font-size: .85em; }
 .hs-run.sel { background: var(--active); border-left-color: var(--color1, #e8a33d); }
 .hs-run .title { font-weight: bold; }
 .hs-foot { flex: 0 0 auto; font-size: .75em; opacity: .75; padding: .2em .4em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Heat Sync model page */
+.hs-model { display: flex; flex-direction: column; min-height: 0; }
+.hs-mtitle { flex: 1 1 auto; display: flex; align-items: center; padding: 0 .5em; font-weight: bold; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hs-var { display: grid; grid-template-columns: 2.6em minmax(0, 1fr) 2.6em; grid-template-rows: auto 2.6em; gap: .15em .2em; font-size: .85em; }
+.hs-var .name { grid-column: 1 / -1; opacity: .8; padding-left: .2em; }
+.hs-var .btn { margin: 0; min-height: 0; }
+.hs-var .hs-step { font-size: 1.4em; font-weight: bold; background: var(--active); border-radius: .4em; }
+.hs-var .hs-val { background: rgba(255,255,255,.08); border-radius: .4em; font-variant-numeric: tabular-nums; }
