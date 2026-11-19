@@ -1791,6 +1791,96 @@ Panels.notifications = class extends Panel {
   }
 };
 
+// ================================================================= Logs (Rakerscreen extra)
+/** Tail of klippy.log / moonraker.log from Moonraker, and Rakerscreen's own log. */
+const LOG_TABS = [["klipper", "Klipper", "klippy.log"], ["moonraker", "Moonraker", "moonraker.log"], ["rakerscreen", "Rakerscreen", null]];
+const LOG_TAIL_BYTES = 256 * 1024;
+let logReqId = 0;
+const logWaiters = {};
+window.__pslog = (id, code, text) => { const w = logWaiters[id]; if (w) { delete logWaiters[id]; w(code, text); } };
+/** Last part of a Moonraker log file: native fetch in the app, plain fetch in a browser. */
+function fetchMoonrakerLog(app, name) {
+  const key = Settings.get("moonraker_api_key") || "";
+  if (window.PSBridge && PSBridge.fetchLog) {
+    return new Promise((resolve, reject) => {
+      const id = ++logReqId;
+      const timer = setTimeout(() => { delete logWaiters[id]; reject(new Error("Timed out")); }, 20000);
+      logWaiters[id] = (code, text) => {
+        clearTimeout(timer);
+        if (code === 200 || code === 206) resolve(text);
+        else reject(new Error(code ? `Moonraker answered HTTP ${code}` : text || "Request failed"));
+      };
+      PSBridge.fetchLog(id, Settings.get("moonraker_host"), app.mr.port(), name, key, LOG_TAIL_BYTES);
+    });
+  }
+  const headers = { Range: `bytes=-${LOG_TAIL_BYTES}` };
+  if (key) headers["X-Api-Key"] = key;
+  return fetch(`${app.mr.httpBase()}/server/files/logs/${name}`, { headers, cache: "no-store" }).then((r) => {
+    if (!r.ok) throw new Error(`Moonraker answered HTTP ${r.status}`);
+    return r.text();
+  });
+}
+Panels.logs = class extends Panel {
+  constructor(app, title) {
+    super(app, title || "Logs");
+    this.tab = "klipper";
+    this.req = 0;
+    this.text = el("pre", { class: "log-text scroll fill" });
+    this.status = el("span", { class: "log-status" });
+    const tabs = ToggleRow(LOG_TABS.map((t) => t[0]), this.tab, (v) => { this.tab = v; this.load(); }, (v) => LOG_TABS.find((t) => t[0] === v)[1]);
+    tabs.el.classList.add("log-tabs");
+    const share = window.PSBridge && PSBridge.shareText
+      ? Button(null, "Share", "color3", { side: true, lines: 1, onclick: () => PSBridge.shareText(`${this.tabName()} log`, this.current || "") })
+      : Button(null, "Copy", "color3", { side: true, lines: 1, onclick: () => this.copy() });
+    this.el.append(tabs.el, this.text, el("div", { class: "sortbar log-bar" }, this.status,
+      Button("arrow-down", "Newest", "color4", { side: true, lines: 1, onclick: () => (this.text.scrollTop = this.text.scrollHeight) }),
+      Button("refresh", "Refresh", "color1", { side: true, lines: 1, onclick: () => this.load() }), share));
+  }
+  tabName() { return LOG_TABS.find((t) => t[0] === this.tab)[1]; }
+  activate() { this.load(); }
+  copy() {
+    const t = this.current || "";
+    if (window.PSBridge && PSBridge.copyText) { PSBridge.copyText(t); this.app.popup("Log copied", 1); return; }
+    if (navigator.clipboard) navigator.clipboard.writeText(t).then(() => this.app.popup("Log copied", 1), () => this.app.popup("Copy failed"));
+  }
+  /** Show text, newest at the bottom; tail: the first line was cut mid-way, drop it. Keeps the last 2000 lines. */
+  show(text, tail) {
+    let lines = text.replace(/\r/g, "").split("\n");
+    if (tail && lines.length > 1) lines.shift();
+    if (lines.length > 2000) lines = lines.slice(-2000);
+    this.current = lines.join("\n");
+    this.text.innerHTML = "";
+    const frag = document.createDocumentFragment();
+    for (const l of lines) {
+      const cls = /(^|\s)(!!|ERROR|Error|error:|Traceback|Exception|Internal error|shutdown)/.test(l) ? "log-err" : /WARNING|warning/.test(l) ? "log-warn" : null;
+      frag.append(cls ? el("span", { class: cls }, l + "\n") : document.createTextNode(l + "\n"));
+    }
+    this.text.append(frag);
+    this.text.scrollTop = this.text.scrollHeight;
+  }
+  async load() {
+    const tab = LOG_TABS.find((t) => t[0] === this.tab);
+    const req = ++this.req;
+    if (!tab[2]) {
+      this.show([this.app.buildReport(), "", "Log since start:", ...AppLog.lines].join("\n"));
+      this.status.textContent = `Rakerscreen ${VERSION} · ${AppLog.lines.length} line${AppLog.lines.length === 1 ? "" : "s"}`;
+      return;
+    }
+    this.status.textContent = `Loading ${tab[2]}…`;
+    try {
+      const text = await fetchMoonrakerLog(this.app, tab[2]);
+      if (req !== this.req) return; // another tab was picked meanwhile
+      this.show(text, text.length >= LOG_TAIL_BYTES * 0.99);
+      this.status.textContent = `${tab[2]} · last ${Math.max(1, Math.round(text.length / 1024))} KB · ${new Date().toTimeString().slice(0, 5)}`;
+    } catch (e) {
+      if (req !== this.req) return;
+      this.current = "";
+      this.text.textContent = `Couldn't load ${tab[2]}: ${e.message}`;
+      this.status.textContent = "";
+    }
+  }
+};
+
 // ================================================================= system.py (simplified)
 Panels.system = class extends Panel {
   constructor(app, title) {

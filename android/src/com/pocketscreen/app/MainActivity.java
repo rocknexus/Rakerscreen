@@ -143,6 +143,8 @@ public class MainActivity extends Activity {
     // ------------------------------------------------------------ self-update (GitHub releases)
     static final String ACTION_INSTALL_STATUS = "com.pocketscreen.app.INSTALL_STATUS";
     static final Pattern REPO = Pattern.compile("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$");
+    static final Pattern HOST = Pattern.compile("^[A-Za-z0-9.-]{1,253}$|^\\[[0-9A-Fa-f:]+\\]$");
+    static final Pattern LOGNAME = Pattern.compile("^[A-Za-z0-9_.-]{1,64}\\.log(\\.[0-9]+)?$");
     private BroadcastReceiver installReceiver;
 
     interface Progress { void at(long done); }
@@ -310,6 +312,47 @@ public class MainActivity extends Activity {
         public void setOrientation(final String mode) {
             getSharedPreferences("pocketscreen", MODE_PRIVATE).edit().putString("orientation", mode).apply();
             runOnUiThread(() -> setRequestedOrientation(orientationFor(mode)));
+        }
+
+        /** The last tailBytes of a Moonraker log file (logs root only), to window.__pslog(id, httpCode, text).
+         *  Done natively: a page loaded from file:// can't fetch from Moonraker (CORS), and this adds the API key. */
+        @JavascriptInterface
+        public void fetchLog(final int id, final String host, final int port, final String name, final String apiKey, final int tailBytes) {
+            if (host == null || !HOST.matcher(host).matches() || port < 1 || port > 65535 || name == null || !LOGNAME.matcher(name).matches()) {
+                js("window.__pslog && __pslog(" + id + ",0," + JSONObject.quote("Invalid log request") + ")");
+                return;
+            }
+            final int tail = Math.max(1024, Math.min(tailBytes, 2 * 1024 * 1024));
+            new Thread(() -> {
+                HttpURLConnection c = null;
+                try {
+                    c = (HttpURLConnection) new URL("http://" + host + ":" + port + "/server/files/logs/" + name).openConnection();
+                    c.setRequestProperty("Range", "bytes=-" + tail);
+                    if (apiKey != null && !apiKey.isEmpty()) c.setRequestProperty("X-Api-Key", apiKey);
+                    c.setConnectTimeout(8000);
+                    c.setReadTimeout(15000);
+                    int code = c.getResponseCode();
+                    if (code != 200 && code != 206) { js("window.__pslog && __pslog(" + id + "," + code + ",\"\")"); return; }
+                    // keep only the tail even if the server ignored the Range header
+                    byte[] ring = new byte[tail];
+                    long total = 0;
+                    try (InputStream in = c.getInputStream()) {
+                        byte[] b = new byte[16384];
+                        int n;
+                        while ((n = in.read(b)) > 0) {
+                            for (int i = 0; i < n; i++) ring[(int) ((total + i) % tail)] = b[i];
+                            total += n;
+                        }
+                    }
+                    int len = (int) Math.min(total, tail);
+                    byte[] out = new byte[len];
+                    long start = total - len;
+                    for (int i = 0; i < len; i++) out[i] = ring[(int) ((start + i) % tail)];
+                    js("window.__pslog && __pslog(" + id + "," + code + "," + JSONObject.quote(new String(out, "UTF-8")) + ")");
+                } catch (Exception e) {
+                    js("window.__pslog && __pslog(" + id + ",0," + JSONObject.quote(describe(e)) + ")");
+                } finally { if (c != null) c.disconnect(); }
+            }).start();
         }
 
         /** Latest GitHub release of owner/repo, as GitHub's JSON, to window.__psupdate.onCheck (null: none yet). */

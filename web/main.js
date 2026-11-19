@@ -27,6 +27,7 @@ const MENUS = {
     { key: "save", name: "Save Config", icon: "complete", method: "ks_confirm_save" },
     { key: "settings", name: "Rakerscreen", icon: "settings", panel: "settings" },
     { key: "notifications", name: "Notifications", icon: "notifications", panel: "notifications" },
+    { key: "logs", name: "Logs", icon: "logs", panel: "logs" },
     { key: "system", name: "System", icon: "info", panel: "system", enable: () => screenApp.mr.connected },
     { key: "fine_tune", name: "Fine Tuning", icon: "fine-tune", panel: "fine_tune" },
   ],
@@ -472,6 +473,7 @@ class ScreenApp {
     this.confirmSendAction("Save configuration?\n\nKlipper will reboot", "printer.gcode.script", { script: "SAVE_CONFIG" });
   }
   popup(message, level = 3) {
+    AppLog.add(level >= 3 ? "popup" : "info", [String(message).replace(/\s+/g, " ")]);
     const p = $("#popup");
     clearTimeout(this.popupTimer);
     const cls = level === 1 ? "message_popup_echo" : level === 2 ? "message_popup_warning" : "message_popup_error";

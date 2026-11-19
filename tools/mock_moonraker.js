@@ -359,6 +359,26 @@ function notesApi(req, res) {
   res.writeHead(405); res.end();
 }
 
+// ---- fake klippy.log / moonraker.log for the Logs panel
+const STARTED = Date.now();
+function fakeLog(kind) {
+  const lines = [];
+  const at = (s) => new Date(STARTED + s * 1000);
+  if (kind === "klippy") {
+    lines.push("Starting Klippy...", "Args: ['/home/pi/klipper/klippy/klippy.py', '/home/pi/printer_data/config/printer.cfg']", "Git version: 'v0.12.0-420-gmock'");
+    lines.push("===== Config file =====", "[printer]", "kinematics = cartesian", "max_velocity = 300", "max_accel = 3000", "=======================");
+    lines.push("Loaded MCU 'mcu' 112 commands (v0.12.0 / gcc: (15:10.3-2021.07-4) 10.3.1)", "MCU 'mcu' config: ADC_MAX=4095 BUS_PINS_i2c1=PB6,PB7 CLOCK_FREQ=72000000");
+    for (let i = 0; i < 400; i++) lines.push(`Stats ${(i * 5.0).toFixed(1)}: gcodein=0  mcu: mcu_awake=0.003 mcu_task_avg=0.000010 bytes_write=${1200 + i * 31} bytes_read=${5400 + i * 87} freq=72000431 heater_bed: target=0 temp=23.8 pwm=0.000 sysload=0.12 cputime=${(i * 0.04).toFixed(3)} memavail=812344`);
+    lines.splice(200, 0, "Unknown command:\"M105\"", "!! Must home axis first: 10.000 0.000 0.000 [0.000]", "Starting heater checks for extruder");
+    lines.push("WARNING: Extruder below minimum temp", "webhooks client 2849712: New connection");
+  } else {
+    lines.push(`${at(0).toISOString()} [server.py:main()] Starting Moonraker on (0.0.0.0, 7125), Hostname: mock`, "[confighelper.py] Configuration loaded");
+    for (let i = 0; i < 300; i++) lines.push(`${at(i * 7).toISOString().replace("T", " ").slice(0, 19)},${String(i % 1000).padStart(3, "0")} [websockets.py:open()] Websocket Opened: ID: ${1000 + i}, Proxied: False, User Agent: Rakerscreen`);
+    lines.splice(120, 0, "[klippy_connection.py] WARNING: Klippy connection timed out, retrying", "[update_manager.py] ERROR: Unable to refresh: network unreachable");
+  }
+  return lines.join("\n") + "\n";
+}
+
 // ---- live reload: any change under web/ (or the overlay) bumps the version; open pages reload themselves
 let webVersion = Date.now();
 let bumpTimer = null;
@@ -369,6 +389,20 @@ try { fs.watch(path.join(__dirname, "annotate.js"), bump); } catch (e) { /* igno
 const server = http.createServer((req, res) => {
   const url = decodeURIComponent(req.url.split("?")[0]);
   if (url === "/__notes") { notesApi(req, res); return; }
+  const logFile = url.match(/^\/server\/files\/logs\/(klippy|moonraker)\.log$/);
+  if (logFile) {
+    // made-up log text, with Range support like Moonraker's file handler
+    const buf = Buffer.from(fakeLog(logFile[1]));
+    const m = (req.headers.range || "").match(/^bytes=-(\d+)$/);
+    const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "Range, X-Api-Key", "Content-Type": "text/plain; charset=utf-8" };
+    if (req.method === "OPTIONS") { res.writeHead(204, cors); res.end(); return; }
+    if (m && Number(m[1]) < buf.length) {
+      const start = buf.length - Number(m[1]);
+      res.writeHead(206, { ...cors, "Content-Range": `bytes ${start}-${buf.length - 1}/${buf.length}` });
+      res.end(buf.subarray(start));
+    } else { res.writeHead(200, cors); res.end(buf); }
+    return;
+  }
   if (url === "/__version") { res.writeHead(200, { "Content-Type": "text/plain", "Cache-Control": "no-store" }); res.end(String(webVersion)); return; }
   if (url === "/__annotate.js") {
     fs.readFile(path.join(__dirname, "annotate.js"), (err, data) => { res.writeHead(err ? 404 : 200, { "Content-Type": "text/javascript", "Cache-Control": "no-store" }); res.end(data || ""); });

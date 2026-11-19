@@ -258,6 +258,7 @@ const ErrorLog = {
   add(cat, msg) {
     msg = String(msg || "").replace(/\s+/g, " ").trim().slice(0, 300);
     if (!msg) return;
+    if (typeof AppLog !== "undefined") AppLog.add("err", [`[${cat}] ${msg}`]);
     const now = Date.now();
     // a popup that just repeats an RPC error already logged adds nothing
     const same = (a, b) => a === b || a.endsWith(": " + b);
@@ -272,6 +273,28 @@ const ErrorLog = {
   clear() { this.entries = []; this.save(); },
 };
 ErrorLog.load();
+
+/** Rakerscreen's own running log (Logs → Rakerscreen): console output and app events since start, in memory. */
+const AppLog = {
+  max: 600,
+  lines: [],
+  add(level, parts) {
+    const d = new Date();
+    const ts = `${d.toTimeString().slice(0, 8)}.${String(d.getMilliseconds()).padStart(3, "0")}`;
+    const msg = parts.map((p) => {
+      if (p instanceof Error) return p.stack || p.message;
+      if (typeof p === "object") { try { return JSON.stringify(p); } catch (e) { return String(p); } }
+      return String(p);
+    }).join(" ");
+    this.lines.push(`${ts} ${level.toUpperCase().padEnd(5)} ${msg}`);
+    if (this.lines.length > this.max) this.lines.splice(0, this.lines.length - this.max);
+  },
+};
+for (const level of ["log", "info", "warn", "error"]) {
+  const orig = console[level].bind(console);
+  console[level] = (...a) => { try { AppLog.add(level, a); } catch (e) { /* never break logging */ } orig(...a); };
+}
+AppLog.add("info", ["Rakerscreen starting"]);
 window.addEventListener("error", (e) => ErrorLog.add("js", `${e.message} @ ${(e.filename || "").split("/").pop()}:${e.lineno}`));
 window.addEventListener("unhandledrejection", (e) => ErrorLog.add("js", `unhandled: ${(e.reason && e.reason.message) || e.reason}`));
 

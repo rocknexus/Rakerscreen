@@ -447,3 +447,10 @@ body.kb-open .dialog-body .desc { font-size: .85em; }
 
 /* LED panel */
 .led-swatch { width: 2.5em; height: 2.5em; border-radius: .5em; border: .1em solid var(--lines); flex: 0 0 auto; }
+/* Logs panel */
+.log-tabs { flex: 0 0 auto; }
+.log-text { margin: .2em 0; padding: .4em .5em; font-family: "Free Mono", "DejaVu Sans Mono", monospace; font-size: .72em; line-height: 1.3; white-space: pre-wrap; word-break: break-word; background: rgba(0,0,0,.25); border-radius: .4em; user-select: text; -webkit-user-select: text; }
+.log-text .log-err { color: #ff6b6b; }
+.log-text .log-warn { color: #f0b429; }
+.log-bar { align-items: center; gap: .2em; }
+.log-bar .log-status { flex: 2 1 0; min-width: 0; padding: 0 .5em; font-size: .8em; opacity: .75; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
