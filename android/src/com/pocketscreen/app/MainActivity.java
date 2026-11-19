@@ -4,6 +4,13 @@ import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
+import android.content.ContentValues;
+import android.database.Cursor;
+import android.os.Environment;
+import android.provider.MediaStore;
+import android.webkit.MimeTypeMap;
+import java.io.File;
+import java.io.FileOutputStream;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
@@ -144,7 +151,8 @@ public class MainActivity extends Activity {
     static final String ACTION_INSTALL_STATUS = "com.pocketscreen.app.INSTALL_STATUS";
     static final Pattern REPO = Pattern.compile("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$");
     static final Pattern HOST = Pattern.compile("^[A-Za-z0-9.-]{1,253}$|^\\[[0-9A-Fa-f:]+\\]$");
-    static final Pattern LOGNAME = Pattern.compile("^[A-Za-z0-9_.-]{1,64}\\.log(\\.[0-9]+)?$");
+    // any file name in Moonraker's logs folder, rotated ones too (klippy.log.2026-11-18, moonraker.log.1, crowsnest.log)
+    static final Pattern LOGNAME = Pattern.compile("^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$");
     static final Pattern CFGNAME = Pattern.compile("^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,63}\\.cfg$");
     private BroadcastReceiver installReceiver;
 
@@ -202,6 +210,58 @@ public class MainActivity extends Activity {
 
     private void js(final String script) {
         web.post(() -> web.evaluateJavascript(script, null));
+    }
+
+    // ------------------------------------------------------------ saving files to Downloads
+    /** A file being written to Downloads/Rakerscreen. */
+    static final class Saved { OutputStream out; String where; Uri uri; File file; }
+
+    /** Android 10+: a new entry in the shared Downloads/Rakerscreen folder (MediaStore, no permission needed).
+     *  Older Android: the app's own Downloads folder (Android/data/com.pocketscreen.app/files/Download/Rakerscreen). */
+    Saved createDownload(String name) throws IOException {
+        Saved s = new Saved();
+        int dot = name.lastIndexOf('.');
+        String mime = dot > 0 ? MimeTypeMap.getSingleton().getMimeTypeFromExtension(name.substring(dot + 1).toLowerCase()) : null;
+        // an unknown type, not text/plain: MediaStore would otherwise tack ".txt" onto names like klippy.log.2026-11-18
+        if (mime == null) mime = "application/octet-stream";
+        if (Build.VERSION.SDK_INT >= 29) {
+            ContentValues v = new ContentValues();
+            v.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
+            v.put(MediaStore.MediaColumns.MIME_TYPE, mime);
+            v.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Rakerscreen");
+            v.put(MediaStore.MediaColumns.IS_PENDING, 1);
+            s.uri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
+            if (s.uri == null) throw new IOException("Couldn't create the file in Downloads");
+            s.out = getContentResolver().openOutputStream(s.uri);
+            if (s.out == null) throw new IOException("Couldn't open the file in Downloads");
+            s.where = "Download/Rakerscreen/" + name;
+        } else {
+            File dir = new File(getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "Rakerscreen");
+            if (!dir.isDirectory() && !dir.mkdirs()) throw new IOException("Couldn't create " + dir);
+            s.file = new File(dir, name);
+            s.out = new FileOutputStream(s.file);
+            s.where = s.file.getAbsolutePath();
+        }
+        return s;
+    }
+
+    /** Close it; keep it (and report its real name: MediaStore adds " (1)" when the name is taken) or throw it away. */
+    String finishDownload(Saved s, boolean keep) {
+        try { if (s.out != null) s.out.close(); } catch (IOException ignored) { }
+        if (s.uri != null) {
+            if (!keep) { getContentResolver().delete(s.uri, null, null); return s.where; }
+            ContentValues v = new ContentValues();
+            v.put(MediaStore.MediaColumns.IS_PENDING, 0);
+            getContentResolver().update(s.uri, v, null, null);
+            try (Cursor c = getContentResolver().query(s.uri, new String[] { MediaStore.MediaColumns.DISPLAY_NAME }, null, null, null)) {
+                if (c != null && c.moveToFirst()) s.where = "Download/Rakerscreen/" + c.getString(0);
+            } catch (Exception ignored) { }
+        } else if (!keep && s.file != null) s.file.delete();
+        return s.where;
+    }
+
+    void downloadEvent(int id, boolean ok, String msg, long bytes) {
+        js("window.__psdl && __psdl(" + id + "," + (ok ? 1 : 0) + "," + JSONObject.quote(msg == null ? "" : msg) + "," + bytes + ")");
     }
 
     /** Methods callable from JavaScript as window.PSBridge.* */
@@ -356,6 +416,62 @@ public class MainActivity extends Activity {
                 } catch (Exception e) {
                     js("window.__pslog && __pslog(" + id + ",0," + JSONObject.quote(describe(e)) + ")");
                 } finally { if (c != null) c.disconnect(); }
+            }).start();
+        }
+
+        /** The whole log file `name` from Moonraker's logs folder, streamed into Downloads/Rakerscreen as `saveAs`.
+         *  Reports to window.__psdl(id, ok, where-or-error, bytes). */
+        @JavascriptInterface
+        public void downloadLog(final int id, final String host, final int port, final String name, final String apiKey, final String saveAs) {
+            String bad = host == null || !HOST.matcher(host).matches() ? "host \"" + host + "\""
+                    : port < 1 || port > 65535 ? "port " + port
+                    : name == null || !LOGNAME.matcher(name).matches() ? "log name \"" + name + "\""
+                    : saveAs == null || !LOGNAME.matcher(saveAs).matches() ? "file name \"" + saveAs + "\"" : null;
+            if (bad != null) { downloadEvent(id, false, "Invalid download: " + bad, 0); return; }
+            new Thread(() -> {
+                HttpURLConnection c = null;
+                Saved s = null;
+                try {
+                    c = (HttpURLConnection) new URL("http://" + host + ":" + port + "/server/files/logs/" + name).openConnection();
+                    if (apiKey != null && !apiKey.isEmpty()) c.setRequestProperty("X-Api-Key", apiKey);
+                    c.setConnectTimeout(8000);
+                    c.setReadTimeout(30000);
+                    int code = c.getResponseCode();
+                    if (code != 200) { downloadEvent(id, false, "Moonraker answered HTTP " + code, 0); return; }
+                    s = createDownload(saveAs);
+                    long total = 0;
+                    try (InputStream in = c.getInputStream()) {
+                        byte[] b = new byte[64 * 1024];
+                        int n;
+                        while ((n = in.read(b)) > 0) { s.out.write(b, 0, n); total += n; }
+                    }
+                    String where = finishDownload(s, true);
+                    s = null;
+                    downloadEvent(id, true, where, total);
+                } catch (Exception e) {
+                    if (s != null) finishDownload(s, false);
+                    downloadEvent(id, false, e instanceof java.net.SocketTimeoutException ? "Moonraker stopped answering" : describe(e), 0);
+                } finally { if (c != null) c.disconnect(); }
+            }).start();
+        }
+
+        /** Text from the page (Rakerscreen's own log) saved as Downloads/Rakerscreen/`saveAs`; reports like downloadLog. */
+        @JavascriptInterface
+        public void saveText(final int id, final String saveAs, final String text) {
+            if (saveAs == null || !LOGNAME.matcher(saveAs).matches()) { downloadEvent(id, false, "Invalid file name \"" + saveAs + "\"", 0); return; }
+            new Thread(() -> {
+                Saved s = null;
+                try {
+                    byte[] b = (text == null ? "" : text).getBytes("UTF-8");
+                    s = createDownload(saveAs);
+                    s.out.write(b);
+                    String where = finishDownload(s, true);
+                    s = null;
+                    downloadEvent(id, true, where, b.length);
+                } catch (Exception e) {
+                    if (s != null) finishDownload(s, false);
+                    downloadEvent(id, false, describe(e), 0);
+                }
             }).start();
         }
 

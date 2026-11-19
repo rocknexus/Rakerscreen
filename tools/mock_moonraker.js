@@ -267,6 +267,10 @@ const rpc = {
   "server.temperature_store": () => JSON.parse(JSON.stringify(tempStore)),
   "server.gcode_store": (p) => ({ gcode_store: gcodeStore.slice(-(p.count || 100)) }),
   "server.webcams.list": () => ({ webcams: [] }),
+  "server.files.list": (p) => {
+    if ((p.root || "gcodes") !== "logs") return files.map((f) => ({ path: f.filename, modified: f.modified, size: f.size, permissions: "rw" }));
+    return LOG_FILES.map(([name, ageH]) => ({ path: name, modified: Date.now() / 1000 - ageH * 3600, size: Buffer.byteLength(logFileText(name)), permissions: "r" }));
+  },
   "server.files.get_directory": (p) => {
     const base = (p.path || "gcodes").replace(/^gcodes\/?/, "");
     const inDir = files.filter((f) => (base ? f.filename.startsWith(base + "/") : true));
@@ -372,6 +376,16 @@ function notesApi(req, res) {
 
 // ---- fake klippy.log / moonraker.log for the Logs panel
 const STARTED = Date.now();
+// the logs folder: [name, hours since last written]; rotated Klipper/Moonraker logs get the same made-up text
+const LOG_FILES = [["klippy.log", 0], ["moonraker.log", 0], ["crowsnest.log", 0.5], ["KlipperScreen.log", 2],
+  ["klippy.log.2026-11-18", 22], ["moonraker.log.1", 26], ["klippy.log.2026-11-17", 46], ["sonar.log", 70]];
+function logFileText(name) {
+  if (!LOG_FILES.some(([n]) => n === name)) return null;
+  if (/^klippy\.log/.test(name)) return fakeLog("klippy");
+  if (/^moonraker\.log/.test(name)) return fakeLog("moonraker");
+  const t0 = Date.now() - 3600e3;
+  return Array.from({ length: 300 }, (_, i) => `[${new Date(t0 + i * 12e3).toISOString()}] ${name.replace(/\.log$/, "")}: mock line ${i + 1}${i % 37 === 5 ? " WARNING: something to look at" : ""}`).join("\n") + "\n";
+}
 const configFiles = {
   "printer.cfg": "# mock printer.cfg\n[printer]\nkinematics: cartesian\nmax_velocity: 300\nmax_accel: 3000\n\n[extruder]\nheater_pin: PA1\n\n[heater_bed]\nheater_pin: PA2\n\n#*# <---------------------- SAVE_CONFIG ---------------------->\n#*# [bed_mesh default]\n",
 };
@@ -425,10 +439,10 @@ try { fs.watch(path.join(__dirname, "annotate.js"), bump); } catch (e) { /* igno
 const server = http.createServer((req, res) => {
   const url = decodeURIComponent(req.url.split("?")[0]);
   if (url === "/__notes") { notesApi(req, res); return; }
-  const logFile = url.match(/^\/server\/files\/logs\/(klippy|moonraker)\.log$/);
-  if (logFile) {
+  const logFile = url.match(/^\/server\/files\/logs\/([A-Za-z0-9_.-]+)$/);
+  if (logFile && logFileText(logFile[1]) !== null) {
     // made-up log text, with Range support like Moonraker's file handler
-    const buf = Buffer.from(fakeLog(logFile[1]));
+    const buf = Buffer.from(logFileText(logFile[1]));
     const m = (req.headers.range || "").match(/^bytes=-(\d+)$/);
     const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "Range, X-Api-Key", "Content-Type": "text/plain; charset=utf-8" };
     if (req.method === "OPTIONS") { res.writeHead(204, cors); res.end(); return; }

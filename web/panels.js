@@ -1793,7 +1793,7 @@ Panels.notifications = class extends Panel {
 
 // ================================================================= Logs (Rakerscreen extra)
 /** Tail of klippy.log / moonraker.log from Moonraker, and Rakerscreen's own log. */
-const LOG_TABS = [["klipper", "Klipper", "klippy.log"], ["moonraker", "Moonraker", "moonraker.log"], ["rakerscreen", "Rakerscreen", null]];
+const LOG_TABS = [["klipper", "Klipper", "klippy.log"], ["moonraker", "Moonraker", "moonraker.log"], ["rakerscreen", "Rakerscreen", null], ["files", "All logs", null]];
 const LOG_TAIL_BYTES = 256 * 1024;
 let logReqId = 0;
 const logWaiters = {};
@@ -1853,31 +1853,101 @@ function moonrakerConfigFile(app, name, text) {
   } else req = fetch(`${app.mr.httpBase()}/server/files/config/${name}`, { headers, cache: "no-store" });
   return req.then(async (r) => done(r.status, await r.text()));
 }
+const dlWaiters = {};
+window.__psdl = (id, ok, msg, bytes) => { const w = dlWaiters[id]; if (w) { delete dlWaiters[id]; w(ok, msg, bytes); } };
+const fmtBytes = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} B`);
+/** "klippy.log" -> "klippy-2026-11-19_1830.log" (a log that is still being written gets the time it was saved);
+    rotated ones (klippy.log.2026-11-18, moonraker.log.1) keep their name. */
+function logSaveName(name, d = new Date()) {
+  const p = (n) => String(n).padStart(2, "0");
+  const stamp = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}`;
+  const m = name.match(/^(.*)\.log$/);
+  return m ? `${m[1]}-${stamp}.log` : name;
+}
+/** Native: resolves {where, bytes} once the file is in Downloads/Rakerscreen. Browser: the browser's own download. */
+function nativeDownload(start, timeout) {
+  return new Promise((resolve, reject) => {
+    const id = ++logReqId;
+    const timer = setTimeout(() => { delete dlWaiters[id]; reject(new Error("Timed out")); }, timeout);
+    dlWaiters[id] = (ok, msg, bytes) => { clearTimeout(timer); if (ok) resolve({ where: msg, bytes }); else reject(new Error(msg || "Download failed")); };
+    start(id);
+  });
+}
+function browserSave(blob, saveAs) {
+  const a = el("a", { href: URL.createObjectURL(blob), download: saveAs });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+  return { where: "your browser's downloads", bytes: blob.size };
+}
+/** The whole log file name from Moonraker's logs folder, saved to disk as saveAs. */
+function downloadMoonrakerLog(app, name, saveAs) {
+  const key = Settings.get("moonraker_api_key") || "";
+  if (window.PSBridge && PSBridge.downloadLog) {
+    const host = String(Settings.get("moonraker_host") || "").trim().replace(/^\w+:\/\//, "").replace(/[/:].*$/, "");
+    return nativeDownload((id) => PSBridge.downloadLog(id, host, parseInt(app.mr.port(), 10) || 7125, name, key, saveAs), 300000);
+  }
+  return fetch(`${app.mr.httpBase()}/server/files/logs/${encodeURIComponent(name)}`, { headers: key ? { "X-Api-Key": key } : {}, cache: "no-store" })
+    .then((r) => { if (!r.ok) throw new Error(`Moonraker answered HTTP ${r.status}`); return r.blob(); })
+    .then((b) => browserSave(b, saveAs));
+}
+/** Text from the page saved to disk as saveAs. */
+function saveTextFile(saveAs, text) {
+  if (window.PSBridge && PSBridge.saveText) return nativeDownload((id) => PSBridge.saveText(id, saveAs, text), 30000);
+  return Promise.resolve(browserSave(new Blob([text], { type: "text/plain" }), saveAs));
+}
+const SAFE_LOG = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/;
+
 Panels.logs = class extends Panel {
   constructor(app, title) {
     super(app, title || "Logs");
     this.tab = "klipper";
+    this.file = null; // All logs: the file open in the viewer (null: the list)
     this.req = 0;
     this.text = el("pre", { class: "log-text scroll fill" });
+    this.list = el("div", { class: "log-list scroll fill hidden" });
     this.status = el("span", { class: "log-status" });
-    const tabs = ToggleRow(LOG_TABS.map((t) => t[0]), this.tab, (v) => { this.tab = v; this.load(); }, (v) => LOG_TABS.find((t) => t[0] === v)[1]);
+    const tabs = ToggleRow(LOG_TABS.map((t) => t[0]), this.tab, (v) => { this.tab = v; this.file = null; this.load(); }, (v) => LOG_TABS.find((t) => t[0] === v)[1]);
     tabs.el.classList.add("log-tabs");
     const share = window.PSBridge && PSBridge.shareText
       ? Button(null, "Share", "color3", { side: true, lines: 1, onclick: () => PSBridge.shareText(`${this.tabName()} log`, this.current || "") })
       : Button(null, "Copy", "color3", { side: true, lines: 1, onclick: () => this.copy() });
-    this.el.append(tabs.el, this.text, el("div", { class: "sortbar log-bar" }, this.status,
-      Button("arrow-down", "Newest", "color4", { side: true, lines: 1, onclick: () => (this.text.scrollTop = this.text.scrollHeight) }),
-      Button("refresh", "Refresh", "color1", { side: true, lines: 1, onclick: () => this.load() }), share));
+    this.backBtn = Button("arrow-left", "All logs", "color4", { side: true, lines: 1, onclick: () => { this.file = null; this.load(); } });
+    this.newest = Button("arrow-down", "Newest", "color4", { side: true, lines: 1, onclick: () => (this.text.scrollTop = this.text.scrollHeight) });
+    this.dlBtn = Button("download", "Download", "color2", { side: true, lines: 1, onclick: (e, btn) => this.download(this.logName(), btn) });
+    this.shareBtn = share;
+    this.el.append(tabs.el, this.text, this.list, el("div", { class: "sortbar log-bar" }, this.status, this.backBtn, this.newest,
+      Button("refresh", "Refresh", "color1", { side: true, lines: 1, onclick: () => this.load() }), this.dlBtn, share));
   }
-  tabName() { return LOG_TABS.find((t) => t[0] === this.tab)[1]; }
+  tabName() { return this.file || LOG_TABS.find((t) => t[0] === this.tab)[1]; }
+  /** The Moonraker log file shown now: the tab's own file, or the one picked under All logs (null: none / Rakerscreen). */
+  logName() { const t = LOG_TABS.find((x) => x[0] === this.tab); return this.tab === "files" ? this.file : t[2]; }
   activate() { this.load(); }
   copy() {
     const t = this.current || "";
     if (window.PSBridge && PSBridge.copyText) { PSBridge.copyText(t); this.app.popup("Log copied", 1); return; }
     if (navigator.clipboard) navigator.clipboard.writeText(t).then(() => this.app.popup("Log copied", 1), () => this.app.popup("Copy failed"));
   }
+  /** Save to disk: a Moonraker log in full (not just the part on screen), or Rakerscreen's own log. */
+  async download(name, btn) {
+    if (btn) btn.busy(true);
+    try {
+      const saveAs = name ? logSaveName(name) : logSaveName("rakerscreen.log");
+      const r = name ? await downloadMoonrakerLog(this.app, name, saveAs) : await saveTextFile(saveAs, this.current || "");
+      this.app.popup(`Saved ${fmtBytes(r.bytes)} to ${r.where}`, 1);
+    } catch (e) {
+      this.app.popup(`Couldn't save ${name || "the log"}: ${e.message}`, 2);
+    } finally { if (btn) btn.busy(false); }
+  }
+  /** Which parts show: the list (All logs) or the viewer, and which bar buttons apply. */
+  mode(list) {
+    this.list.classList.toggle("hidden", !list);
+    this.text.classList.toggle("hidden", list);
+    this.backBtn.classList.toggle("hidden", !(this.tab === "files" && this.file));
+    for (const b of [this.newest, this.dlBtn, this.shareBtn]) b.classList.toggle("hidden", list);
+  }
   /** Show text, newest at the bottom; tail: the first line was cut mid-way, drop it. Keeps the last 2000 lines. */
   show(text, tail) {
+    this.mode(false);
     let lines = text.replace(/\r/g, "").split("\n");
     if (tail && lines.length > 1) lines.shift();
     if (lines.length > 2000) lines = lines.slice(-2000);
@@ -1892,25 +1962,61 @@ Panels.logs = class extends Panel {
     this.text.scrollTop = this.text.scrollHeight;
   }
   async load() {
-    const tab = LOG_TABS.find((t) => t[0] === this.tab);
     const req = ++this.req;
-    if (!tab[2]) {
+    if (this.tab === "rakerscreen") {
       this.show([this.app.buildReport(), "", "Log since start:", ...AppLog.lines].join("\n"));
       this.status.textContent = `Rakerscreen ${VERSION} · ${AppLog.lines.length} line${AppLog.lines.length === 1 ? "" : "s"}`;
       return;
     }
-    this.status.textContent = `Loading ${tab[2]}…`;
+    if (this.tab === "files" && !this.file) { this.loadList(req); return; }
+    const name = this.logName();
+    this.mode(false);
+    this.status.textContent = `Loading ${name}…`;
+    if (/\.(gz|zip|xz|bz2)$/i.test(name)) {
+      this.current = "";
+      this.text.textContent = `${name} is compressed, so it can't be shown here. Download saves it as it is.`;
+      this.status.textContent = name;
+      return;
+    }
     try {
-      const text = await fetchMoonrakerLog(this.app, tab[2]);
+      const text = await fetchMoonrakerLog(this.app, name);
       if (req !== this.req) return; // another tab was picked meanwhile
       this.show(text, text.length >= LOG_TAIL_BYTES * 0.99);
-      this.status.textContent = `${tab[2]} · last ${Math.max(1, Math.round(text.length / 1024))} KB · ${new Date().toTimeString().slice(0, 5)}`;
+      this.status.textContent = `${name} · last ${Math.max(1, Math.round(text.length / 1024))} KB · ${new Date().toTimeString().slice(0, 5)}`;
     } catch (e) {
       if (req !== this.req) return;
       this.current = "";
-      this.text.textContent = `Couldn't load ${tab[2]}: ${e.message}`;
+      this.text.textContent = `Couldn't load ${name}: ${e.message}`;
       this.status.textContent = "";
     }
+  }
+  /** Every file in Moonraker's logs folder (rotated logs, crowsnest, KlipperScreen, ...), newest first. */
+  async loadList(req) {
+    this.mode(true);
+    this.status.textContent = "Listing logs on the host…";
+    let files;
+    try { files = await this.app.mr.call("server.files.list", { root: "logs" }); }
+    catch (e) {
+      if (req !== this.req) return;
+      this.list.innerHTML = "";
+      this.list.append(el("div", { class: "desc", style: { padding: "1em" } }, `Couldn't list the logs: ${e.message || e}`));
+      this.status.textContent = "";
+      return;
+    }
+    if (req !== this.req) return;
+    files = (files || []).filter((x) => x && SAFE_LOG.test(x.path || "")).sort((x, y) => (y.modified || 0) - (x.modified || 0));
+    this.list.innerHTML = "";
+    if (!files.length) this.list.append(el("div", { class: "desc", style: { padding: "1em" } }, "No log files found."));
+    for (const x of files) {
+      const when = x.modified ? new Date(x.modified * 1000) : null;
+      const date = when ? `${when.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${when.toTimeString().slice(0, 5)}` : "";
+      const dl = Button("download", null, "log-dl", { onclick: (e, btn) => { e.stopPropagation(); this.download(x.path, btn); } });
+      this.list.append(el("div", { class: "log-file", onclick: () => { this.file = x.path; this.load(); } },
+        el("div", { class: "grow" }, el("div", { class: "title" }, x.path), el("div", { class: "desc" }, [fmtBytes(x.size || 0), date].filter(Boolean).join(" · "))),
+        dl));
+    }
+    const total = files.reduce((n, x) => n + (x.size || 0), 0);
+    this.status.textContent = `${files.length} log file${files.length === 1 ? "" : "s"} · ${fmtBytes(total)} · tap one to read it`;
   }
 };
 
