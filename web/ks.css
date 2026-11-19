@@ -490,6 +490,11 @@ body.kb-open .dialog-body .desc { font-size: .85em; }
 .hs-old { opacity: .6; font-weight: normal; }
 .hs-up, .hs-down { opacity: .65; font-weight: normal; font-size: .85em; white-space: nowrap; }
 .hs-change { margin-top: .3em; font-style: italic; }
+.hs-kv .hs-kv-head { opacity: 1; font-weight: bold; margin-top: .3em; grid-column: 1 / -1; }
+.hs-kv .hs-kv-head + b { display: none; }
+.hs-test .hs-body { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.hs-test .hs-kv b { white-space: nowrap; }
+.hs-test .hs-card { font-size: .8em; }
 .hs-cfg { max-width: 80vw; box-sizing: border-box; max-height: 40vh; overflow: auto; font-size: .62em; background: rgba(0,0,0,.3); padding: .5em; border-radius: .4em; white-space: pre; text-align: left; margin-top: .5em; }
 .hs-run { padding: .4em .6em; border-radius: .4em; cursor: pointer; border-left: .3em solid transparent; font-size: .85em; }
 .hs-run.sel { background: var(--active); border-left-color: var(--color1, #e8a33d); }

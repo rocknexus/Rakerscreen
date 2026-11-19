@@ -201,14 +201,25 @@ function startPrint(filename) {
 }
 
 // ------------------------------------------------------------------ physics tick
+// heaters: the element heats towards a full-power ceiling with time constant τ, the sensor follows it with its own
+// lag (same model as the fake klippy.log, so Heat Sync's Test heat should measure about these numbers)
+const AMB = 23.5;
+const phys = {
+  extruder: { tau: 65, tinf: 305, sensTau: 5, h: S.extruder.temperature, s: S.extruder.temperature },
+  heater_bed: { tau: 170, tinf: 118, sensTau: 14, h: S.heater_bed.temperature, s: S.heater_bed.temperature },
+};
+let physLast = Date.now();
 setInterval(() => {
+  const now = Date.now(), dt = Math.min(1, (now - physLast) / 1000);
+  physLast = now;
   for (const h of ["extruder", "heater_bed"]) {
-    const o = S[h], amb = 23.5, rate = h === "extruder" ? 0.08 : 0.03;
-    let t = o.temperature;
-    let power = 0;
-    if (o.target > 0) { power = Math.max(0, Math.min(1, (o.target - t) / 10)); t += (o.target - t) * rate + (Math.random() - 0.5) * 0.3; }
-    else t += (amb - t) * 0.02;
-    set(h, { temperature: Math.round(t * 100) / 100, power: Math.round(power * 100) / 100 });
+    const o = S[h], x = phys[h];
+    // full power until 2° short, then a PID-like hold
+    const hold = Math.max(0, (o.target - AMB) / (x.tinf - AMB));
+    const power = o.target <= 0 ? 0 : x.s < o.target - 2 ? 1 : Math.min(1, Math.max(0, hold + 0.25 * (o.target - x.s)));
+    x.h += ((AMB + (x.tinf - AMB) * power) - x.h) * (dt / x.tau);
+    x.s += (x.h - x.s) * (dt / x.sensTau);
+    set(h, { temperature: Math.round((x.s + (Math.random() - 0.5) * 0.2) * 100) / 100, power: Math.round(power * 1000) / 1000 });
   }
   set("temperature_sensor mcu", { temperature: Math.round((38 + Math.random()) * 10) / 10 });
   set("heater_fan hotend_fan", { speed: S.extruder.temperature > 50 ? 1 : 0 });

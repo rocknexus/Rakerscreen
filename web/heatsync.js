@@ -156,6 +156,10 @@ const HeatSync = {
   record(text) {
     const runs = [];
     for (const s of this.parse(text)) for (const run of this.findRuns(s)) runs.push(this.analyze(run));
+    return this.addRuns(runs);
+  },
+  /** Add analysed heat-ups to the record (skipping ones already there). Returns {found, added}. */
+  addRuns(runs) {
     const have = this.load(), ids = new Set(have.map((r) => r.id));
     const fresh = runs.filter((r) => !ids.has(r.id));
     let all = [...have, ...fresh];
@@ -175,6 +179,90 @@ const HeatSync = {
     this.save(all);
     return { found: runs.length, added: fresh.length };
   },
+  // ------------------------------------------------------------ Test heat: heat one heater now and record it live
+  /* Sets the target, samples temperature/target/power from the printer status twice a second, stops TEST_HOLD
+     seconds after reaching the target (to see the overshoot), then analyses it like a log heat-up and fits the
+     two-lag model. Lives here, not in the panel, so it keeps going when you leave the page. */
+  TEST_HOLD: 45,
+  TEST_MAX: 1500,
+  test: null,
+  /** Devices with a settable target (extruders, bed, generic heaters). */
+  heaterDevs(p) {
+    return p.tempDevices().filter((d) => !d.startsWith("temperature_fan") && typeof p.stat(d, "target") === "number");
+  },
+  /** Klipper's log name for a device: extruder, heater_bed, or the generic heater's own name. */
+  logName(dev) { return dev === "extruder" || dev === "heater_bed" || /^extruder\d+$/.test(dev) ? dev : devName(dev); },
+  /** Why a test can't start on dev at target, or null. */
+  testProblem(app, dev, target) {
+    const p = app.printer, now = p.stat(dev, "temperature"), tgt = p.stat(dev, "target");
+    if (this.test && this.test.state === "running") return "A test heat is already running";
+    if (p.isPrinting()) return "Not while printing";
+    if (!(target > 0)) return "Pick a target temperature";
+    if (typeof now !== "number") return "No temperature from this heater";
+    if (tgt > 0) return `It's heating to ${tgt.toFixed(0)}° now: turn it off first`;
+    if (now > target - 15) return `It needs to start at least 15° below the target: it's ${now.toFixed(0)}° now. Let it cool first`;
+    return null;
+  },
+  startTest(app, dev, target, off) {
+    const p = app.printer, t0 = performance.now() / 1000;
+    const T = { app, dev, heater: this.logName(dev), target, off, samples: [], state: "running", started: t0, wall0: Date.now() / 1000,
+      setAt: t0 + 3, set: false, note: "" };
+    T.take = () => {
+      const now = performance.now() / 1000;
+      T.samples.push({ t: now - t0 + 1, wall: T.wall0 + (now - t0), target: Number(p.stat(dev, "target")) || 0,
+        temp: Number(p.stat(dev, "temperature")), pwm: Number(p.stat(dev, "power")) || 0 });
+    };
+    T.take();
+    T.timer = setInterval(() => this.testTick(T), 500);
+    this.test = T;
+    return T;
+  },
+  testTick(T) {
+    T.take();
+    const now = performance.now() / 1000;
+    // a few seconds at the starting temperature first, then the target
+    if (!T.set && now >= T.setAt) {
+      T.set = true;
+      if (!T.app.setTargetTemp(T.dev, T.target)) { this.endTest(T, "error", "Couldn't set the target"); return; }
+    }
+    if (T.set) {
+      const last = T.samples[T.samples.length - 1];
+      if (now - T.setAt > 6 && Math.abs(last.target - T.target) > 0.5) { this.endTest(T, "aborted", "Stopped: the target was changed outside the test"); return; }
+      if (T.reachedAt === undefined && last.temp >= T.target - 1) T.reachedAt = now;
+      if (T.reachedAt !== undefined && now - T.reachedAt >= this.TEST_HOLD) { this.endTest(T, "done"); return; }
+      if (now - T.setAt > this.TEST_MAX) { this.endTest(T, "done", "Stopped after 25 minutes without reaching the target"); return; }
+    }
+    if (T.onTick) T.onTick(T);
+  },
+  /** The heat-up so far as a run for analyze(): from the sample just before the target took effect. */
+  testRun(T) {
+    const k = T.samples.findIndex((s) => Math.abs(s.target - T.target) < 0.5);
+    if (k < 1) return null;
+    const samples = T.samples.slice(k - 1).filter((s, i) => i === 0 || Math.abs(s.target - T.target) < 0.5);
+    if (samples.length < 3 || samples[samples.length - 1].t - samples[1].t < 10) return null;
+    return { name: T.heater, samples };
+  },
+  /** done: analyse, fit and record it. cancelled / error: heater off. aborted (someone else set a target): left alone. */
+  endTest(T, state, note) {
+    clearInterval(T.timer);
+    T.state = state;
+    if (note) T.note = note;
+    if (T.set && ((state === "done" && T.off) || state === "cancelled" || state === "error")) T.app.setTargetTemp(T.dev, 0);
+    if (state === "done") {
+      const run = this.testRun(T);
+      if (run) {
+        const r = this.analyze(run);
+        r.test = true;
+        r.id = "test|" + r.id;
+        T.result = r;
+        T.fit = this.fit(r);
+        this.addRuns([r]);
+      } else { T.state = "error"; T.note = "Not enough was recorded to measure anything"; }
+    }
+    if (T.onEnd) T.onEnd(T);
+  },
+  cancelTest() { if (this.test && this.test.state === "running") this.endTest(this.test, "cancelled", "Cancelled"); },
+
   CHANGES: "heat_sync_changes",
   changes(heater) { return (Settings.get(this.CHANGES) || {})[heater] || null; },
   /** Medians over a heater's recorded runs (the measured model), or null without a time constant yet. */
@@ -387,6 +475,7 @@ Panels.heat_sync = class extends Panel {
     this.status = el("span", { class: "hs-status" });
     this.heaterBar = el("div", { class: "hs-heaters" });
     const read = Button("refresh", "Read log", "color1", { side: true, lines: 1, onclick: (e, b) => this.readLog(b) });
+    const test = Button("heat-up", "Test heat", "color2", { side: true, lines: 1, onclick: () => (HeatSync.test && HeatSync.test.state === "running" ? this.openTest() : this.testDialog()) });
     const clear = Button("delete", "Clear", "color2", { side: true, lines: 1, onclick: () => this.app.dialog("Clear Heat Sync", [
       { name: "Clear", style: "dialog-error", cb: () => { HeatSync.save([]); Settings.set(HeatSync.CHANGES, {}); this.sel = null; this.render(); } },
       { name: "Cancel", style: "dialog-default" }], "Forget every recorded heat-up?") });
@@ -400,7 +489,7 @@ Panels.heat_sync = class extends Panel {
     const model = Button("fine-tune", "Model", "color3", { side: true, lines: 1, onclick: () => this.openModel() });
     const exp = Button("file", "Export", "color4", { side: true, lines: 1, onclick: (e, b) => this.exportCfg(b) });
     this.main = el("div", { class: "fill", style: { display: "flex", flexDirection: "column", minHeight: 0 } },
-      el("div", { class: "hs-top" }, this.heaterBar, model, exp, read, clear), this.body, el("div", { class: "hs-foot" }, this.status));
+      el("div", { class: "hs-top" }, this.heaterBar, test, model, exp, read, clear), this.body, el("div", { class: "hs-foot" }, this.status));
     this.el.append(this.main);
   }
 
@@ -474,9 +563,130 @@ Panels.heat_sync = class extends Panel {
     this.render();
     this.app.updateActionBar();
   }
-  canGoBack() { return !!this.mView; }
-  back() { if (this.mView) { this.closeModel(); return true; } return false; }
-  deactivate() { if (this.mView) this.closeModel(); }
+  canGoBack() { return !!this.mView || !!this.tView; }
+  back() {
+    if (this.mView) { this.closeModel(); return true; }
+    if (this.tView) { this.closeTest(); return true; } // a running test keeps going
+    return false;
+  }
+  deactivate() { if (this.mView) this.closeModel(); if (this.tView) this.closeTest(); }
+
+  // ------------------------------------------------------------ Test heat: pick a heater and target, then watch it
+  /** prev: the choices so far (coming back from typing a custom target). */
+  testDialog(prev) {
+    const devs = HeatSync.heaterDevs(this.p);
+    if (!devs.length) { this.app.popup("No heaters found", 1); return; }
+    const presets = (d) => (d === "heater_bed" ? [50, 60, 80, 100] : d.startsWith("extruder") ? [150, 200, 240] : [50, 80]);
+    const label = (d) => (d === "heater_bed" ? "Bed" : prettify(devName(d)));
+    const st = prev ? { ...prev } : { dev: devs.find((d) => HeatSync.logName(d) === this.heater) || devs[0], target: 0, off: true };
+    if (!prev) st.target = presets(st.dev)[1] || presets(st.dev)[0];
+    const body = el("div", { class: "ss-config" });
+    const info = el("div", { class: "desc" });
+    const draw = () => {
+      body.innerHTML = "";
+      const now = this.p.stat(st.dev, "temperature");
+      const tg = presets(st.dev);
+      const vals = [...tg.map(String), "other"];
+      const cur = tg.includes(st.target) ? String(st.target) : "other";
+      const targets = ToggleRow(vals, cur, (v) => {
+        if (v !== "other") { st.target = Number(v); draw(); return; }
+        Input.number({ title: "Test target", value: st.target, unit: "°C", min: 0, ok: "Set", onSubmit: (x) => this.testDialog({ ...st, target: Math.round(x) }) });
+      }, (v) => (v === "other" ? (cur === "other" ? `${st.target}°` : "Other…") : `${v}°`), true);
+      body.append(
+        el("div", { class: "ss-config-row" }, el("div", { class: "name" }, "Heater"),
+          ToggleRow(devs, st.dev, (d) => { st.dev = d; st.target = presets(d)[1] || presets(d)[0]; draw(); }, label, true).el),
+        el("div", { class: "ss-config-row" }, el("div", { class: "name" }, `Target · now ${typeof now === "number" ? now.toFixed(0) + "°" : "–"}`), targets.el),
+        el("div", { class: "ss-config-row" }, el("div", { class: "name" }, "When done"),
+          ToggleRow(["off", "keep"], st.off ? "off" : "keep", (v) => { st.off = v === "off"; }, (v) => (v === "off" ? "Turn the heater off" : "Keep heating"), true).el),
+        info);
+      const why = HeatSync.testProblem(this.app, st.dev, st.target);
+      info.textContent = why ? `⚠ ${why}`
+        : `Heats ${label(st.dev)} from ${now.toFixed(0)}° to ${st.target}° and records it, then holds ${HeatSync.TEST_HOLD} s to see the overshoot. Best from room temperature: the more of the curve it sees, the better the fit.`;
+    };
+    draw();
+    this.app.dialog("Test heat", [
+      { name: "Start", style: "dialog-primary", cb: () => {
+        const why = HeatSync.testProblem(this.app, st.dev, st.target);
+        if (why) { this.app.popup(why, 2); return; }
+        HeatSync.startTest(this.app, st.dev, st.target, st.off);
+        this.heater = HeatSync.logName(st.dev);
+        this.openTest();
+      } },
+      { name: "Cancel", style: "dialog-default" }], body);
+  }
+  openTest() {
+    if (this.mView) this.closeModel();
+    if (!this.tView) {
+      this.main.style.display = "none";
+      this.tView = el("div", { class: "fill hs-model hs-test" });
+      this.el.append(this.tView);
+    }
+    const T = HeatSync.test;
+    if (T) { T.onTick = () => this.tView && this.renderTest(); T.onEnd = () => { if (this.tView) this.renderTest(); else this.render(); }; }
+    this.renderTest();
+    this.app.updateActionBar();
+  }
+  closeTest() {
+    if (this.tView) { this.tView.remove(); this.tView = null; }
+    const T = HeatSync.test;
+    if (T) { T.onTick = null; T.onEnd = () => this.render(); if (T.state !== "running") T.seen = true; }
+    this.main.style.display = "flex";
+    this.render();
+    this.app.updateActionBar();
+  }
+  renderTest() {
+    const T = HeatSync.test, V = this.tView;
+    if (!T || !V) return;
+    const name = T.dev === "heater_bed" ? "Bed" : prettify(devName(T.dev));
+    const elapsed = (performance.now() / 1000) - T.started;
+    const last = T.samples[T.samples.length - 1] || {};
+    const run = T.state === "running" ? HeatSync.testRun(T) : null;
+    const r = T.result || (run ? HeatSync.analyze(run) : null);
+    const f = (v, d, u) => (typeof v === "number" && isFinite(v) ? `${v.toFixed(d)}${u}` : "–");
+    // which phase it's in: the last phase that has started
+    const phaseNow = () => {
+      if (!r || !r.phases || !r.phases.length) return T.set ? "Lag" : "Recording the start";
+      const n = r.T.length - 1, ph = [...r.phases].reverse().find(([, a]) => a <= n);
+      return ph ? HS_PHASES[ph[0]][0] : "Lag";
+    };
+    const canvas = el("canvas", { class: "hs-chart" });
+    const buttons = [];
+    const kv = [];
+    if (T.state === "running") {
+      kv.push(["Elapsed", fmtSecs(elapsed)], ["Temperature", f(last.temp, 1, " °C")], ["Power", f(last.pwm * 100, 0, " %")], ["Phase", phaseNow()]);
+      if (T.reachedAt !== undefined) kv.push(["Holding", `${fmtSecs(performance.now() / 1000 - T.reachedAt)} of ${HeatSync.TEST_HOLD}s`]);
+      buttons.push(Button("cancel", "Cancel", "color2", { side: true, lines: 1, onclick: () => HeatSync.cancelTest() }));
+    } else if (T.result) {
+      const p = T.fit, A = p ? p.tinf - r.T0 : 0, va = p ? HeatSync.toVA(p, A) : null;
+      kv.push(["Measured", ""], ["Time constant τ", f(r.tau, 0, " s")], ["Lag", f(r.lag, 1, " s")], ["T∞ full power", f(r.tinf, 0, " °C")],
+        ["Peak rate", f(r.rmax, 2, " °C/s")], ["To target", r.tReach !== null ? fmtSecs(r.tReach) : "not reached"], ["Overshoot", f(r.overshoot, 1, " °C")]);
+      if (p) kv.push(["Fitted (two-lag)", ""], ["Lag L", f(p.lag, 1, " s")], ["T∞", f(p.tinf, 0, " °C")], ["τ", f(p.tau, 0, " s")], ["Sensor lag τs", f(p.taus, 1, " s")],
+        ["Velocity · peak T′", f(va.v, 2, " °C/s")], ["Accel · peak T″", f(va.a, 3, " °C/s²")], ["Fit error", f(p.rms, 2, " °C RMS")]);
+      if (p) buttons.push(Button("complete", "Save fit as model", "color3", { side: true, lines: 1, onclick: () => {
+        HeatSync.saveCustom(T.heater, p); this.app.popup(`${name}: predictions now use the fitted model`, 1); } }));
+      buttons.push(Button("fine-tune", "Model page", "color1", { side: true, lines: 1, onclick: () => {
+        this.closeTest(); this.heater = T.heater; this.render();
+        this.sel = HeatSync.load().find((x) => x.id === r.id) || this.sel; this.openModel(); } }));
+    }
+    buttons.push(Button("arrow-left", T.state === "running" ? "Hide" : "Close", "color4", { side: true, lines: 1, onclick: () => this.closeTest() }));
+    const head = T.state === "running" ? `Test · ${name} → ${T.target}°`
+      : T.state === "done" ? `Done · ${name} ${r ? r.T0.toFixed(0) : ""}°→${T.target}°`
+      : `Test heat ${T.state === "cancelled" ? "cancelled" : "stopped"} · ${name}`;
+    V.innerHTML = "";
+    V.append(
+      el("div", { class: "hs-top" }, el("div", { class: "hs-mtitle" }, head), ...buttons),
+      el("div", { class: "hs-body fill" },
+        el("div", { class: "hs-left scroll" },
+          el("div", { class: "hs-card" },
+            el("div", { class: "hs-kv" }, ...kv.flatMap(([k, v]) => (v === "" ? [el("span", { class: "hs-kv-head" }, k), el("b", {}, "")] : [el("span", {}, k), el("b", {}, v)]))),
+            T.note ? el("div", { class: "desc", style: { marginTop: ".3em" } }, T.note) : null,
+            T.state === "done" && T.result ? el("div", { class: "desc", style: { marginTop: ".3em" } }, "Added to the recorded heat-ups (marked Test).") : null)),
+        el("div", { class: "hs-right" }, this.legend.cloneNode(true), canvas)));
+    if (r) {
+      const ov = T.fit ? HeatSync.curve(T.fit, r.T0, r.target, HeatSync.realCurve(r).length) : null;
+      requestAnimationFrame(() => this.draw(r, ov, canvas));
+    }
+  }
   /** Set one variable; velocity/acceleration go through fromVA (they set τ and τs). */
   setVar(key, val) {
     const r = this.sel, p = this.mp, A = () => p.tinf - r.T0;
@@ -549,12 +759,15 @@ Panels.heat_sync = class extends Panel {
     requestAnimationFrame(() => this.draw(r, ov, canvas));
   }
   activate() {
+    // back to a test that's running, or one that finished while you were away
+    const T = HeatSync.test;
+    if (T && (T.state === "running" || !T.seen)) { this.render(); this.openTest(); return; }
     const runs = HeatSync.load();
     this.status.textContent = runs.length ? `${runs.length} heat-up${runs.length === 1 ? "" : "s"} recorded · Read log adds new ones from klippy.log` : "";
     this.render();
     if (!HeatSync.load().length) this.readLog();
   }
-  relayout() { if (this.mView) this.renderModel(); else this.render(); }
+  relayout() { if (this.mView) this.renderModel(); else if (this.tView) this.renderTest(); else this.render(); }
   async readLog(btn) {
     if (btn) btn.busy(true);
     this.status.textContent = "Reading klippy.log…";
@@ -636,7 +849,7 @@ Panels.heat_sync = class extends Panel {
     for (const r of mine) {
       const when = r.wall ? new Date(r.wall * 1000) : null;
       const row = el("div", { class: "hs-run" + (r === this.sel ? " sel" : ""), onclick: () => { this.sel = r; this.renderLeft(mine); this.renderRight(); } },
-        el("div", { class: "title" }, `${r.T0.toFixed(0)}° → ${r.target}°`, el("span", { class: "desc" }, when ? `  ${when.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${when.toTimeString().slice(0, 5)}` : "")),
+        el("div", { class: "title" }, `${r.T0.toFixed(0)}° → ${r.target}°${r.test ? " · Test" : ""}`, el("span", { class: "desc" }, when ? `  ${when.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${when.toTimeString().slice(0, 5)}` : "")),
         el("div", { class: "desc" }, r.tau ? `τ ${r.tau.toFixed(0)} s · lag ${r.lag.toFixed(1)} s · ${r.tReach !== null ? "reached in " + fmtSecs(r.tReach) : "didn't reach"}` : r.note || "–"));
       L.append(row);
     }
