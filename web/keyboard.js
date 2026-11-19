@@ -78,6 +78,10 @@ class VirtualKeyboard {
     const a = document.activeElement;
     if (this.eligible(a)) return; // moved to another field: onFocus handled it
     if (!document.hasFocus()) return; // the whole window lost focus (app switch): keep the keyboard
+    // a tap elsewhere in an open dialog (its text, its background) keeps the field and keyboard;
+    // the keyboard goes when the dialog closes (the field leaves the page)
+    const t = this.target, dlg = t && t.closest("#dialog");
+    if (dlg && dlg.classList.contains("show") && document.contains(t)) { try { t.focus({ preventScroll: true }); } catch (e) { t.focus(); } return; }
     if (this.target) this.commit();
     this.hide();
   }
