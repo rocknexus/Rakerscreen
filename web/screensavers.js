@@ -4,13 +4,13 @@
    "blank" is KlipperScreen's black screen (and the only one that dims the backlight right away). */
 
 const Screensavers = {
-  list: [["blank", "Black screen (default)"], ["pipes", "Pipes (3D)"], ["starfield", "Starfield"], ["ribbons", "Ribbons"], ["status", "Clock and printer status"], ["random", "Random (not black)"]],
+  list: [["blank", "Black screen (default)"], ["pipes", "Pipes (3D)"], ["gyroid", "Gyroid layers"], ["starfield", "Starfield"], ["ribbons", "Ribbons"], ["status", "Clock and printer status"], ["random", "Random (not black)"]],
   current: null,
 
   /** Start the chosen saver in host; returns the key that actually runs. */
   start(host, app, key) {
     this.stop();
-    if (key === "random") { const pool = ["pipes", "starfield", "ribbons", "status"]; key = pool[Math.floor(Math.random() * pool.length)]; }
+    if (key === "random") { const pool = ["pipes", "gyroid", "starfield", "ribbons", "status"]; key = pool[Math.floor(Math.random() * pool.length)]; }
     if (!this.savers[key]) key = "blank";
     if (key === "blank") return key;
     try { this.current = this.savers[key](host, app); } catch (e) { console.warn("screensaver " + key + ": " + e.message); this.current = this.savers.starfield(host, app); key = "starfield"; }
@@ -313,4 +313,98 @@ Screensavers.savers.status = (host, app) => {
     box.style.transform = `translate(${(x * (W - bw)).toFixed(1)}px, ${(y * (H - bh)).toFixed(1)}px)`;
   });
   return () => { stop(); clearInterval(tick); box.remove(); };
+};
+
+// ================================================================= Gyroid layers: sweeping up through the slices of gyroid infill
+/* The gyroid sin x·cos y + sin y·cos z + sin z·cos x = 0 cut at height z is the line pattern slicers print as gyroid
+   infill; moving z up layer by layer makes it flow. Drawn in a fragment shader: distance to the curve ≈ |f| / |∇f|.
+   Inside a rounded "part" with two perimeter walls, the last few layers fading below the current one. The part
+   drifts and breathes slowly so nothing stays put on the screen. */
+Screensavers.savers.gyroid = (host) => {
+  const { c, fit } = Screensavers.canvas(host);
+  const gl = c.getContext("webgl", { antialias: false, alpha: false });
+  if (!gl) { c.remove(); throw new Error("no WebGL"); }
+  const vs = "attribute vec2 aP; void main() { gl_Position = vec4(aP, 0.0, 1.0); }";
+  const fs = `precision highp float;
+    uniform vec2 uRes, uCenter, uHalf;
+    uniform float uZ, uCell, uLayer, uMix, uHue, uRound;
+    float gy(vec2 p, float z, out float g) {
+      float sx = sin(p.x), cx = cos(p.x), sy = sin(p.y), cy = cos(p.y), sz = sin(z), cz = cos(z);
+      vec2 grad = vec2(cx * cy - sz * sx, -sx * sy + cy * cz);
+      g = max(length(grad), 0.25);
+      return sx * cy + sy * cz + sz * cx;
+    }
+    // distance in pixels from the gyroid line at height z
+    float line(vec2 px, float z) {
+      vec2 p = px / uCell * 6.2831853;
+      float g, f = gy(p, z, g);
+      return abs(f) / g * uCell / 6.2831853;
+    }
+    float box(vec2 q, vec2 h, float r) { vec2 d = abs(q) - h + r; return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - r; }
+    vec3 hue(float h) { return clamp(abs(mod(h * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0); }
+    void main() {
+      vec2 px = gl_FragCoord.xy;
+      float w = uCell * 0.045;                 // extrusion width in pixels
+      float d = box(px - uCenter, uHalf, uRound);
+      vec3 col = vec3(0.02, 0.02, 0.025);
+      // bed grid outside the part
+      vec2 gg = abs(fract(px / (uCell * 0.5)) - 0.5) * uCell * 0.5;
+      col += vec3(0.035) * (1.0 - smoothstep(0.0, 1.2, min(gg.x, gg.y)));
+      vec3 fil = mix(hue(uHue), vec3(1.0), 0.15);
+      if (d < -w * 1.5) {
+        // infill: the layers below fade out, the current one blends into the next
+        for (int k = 3; k >= 1; k--) {
+          float a = smoothstep(w, w * 0.4, line(px, uZ - float(k) * uLayer));
+          col = mix(col, fil * (0.5 - 0.12 * float(k)), a * 0.8);
+        }
+        float a0 = smoothstep(w, w * 0.4, line(px, uZ));
+        float a1 = smoothstep(w, w * 0.4, line(px, uZ + uLayer));
+        col = mix(col, fil * 0.9, a0 * (1.0 - uMix));
+        col = mix(col, fil * 0.9, a1 * uMix);
+      }
+      // two perimeter walls
+      float wall = min(abs(d + w * 0.5), abs(d + w * 2.6));
+      col = mix(col, fil, smoothstep(w * 0.75, w * 0.25, wall));
+      gl_FragColor = vec4(col, 1.0);
+    }`;
+  const sh = (type, src) => { const o = gl.createShader(type); gl.shaderSource(o, src); gl.compileShader(o); if (!gl.getShaderParameter(o, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(o)); return o; };
+  const prog = gl.createProgram();
+  gl.attachShader(prog, sh(gl.VERTEX_SHADER, vs)); gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+  gl.useProgram(prog);
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+  const aP = gl.getAttribLocation(prog, "aP");
+  gl.enableVertexAttribArray(aP); gl.vertexAttribPointer(aP, 2, gl.FLOAT, false, 0, 0);
+  const U = {}; for (const n of ["uRes", "uCenter", "uHalf", "uZ", "uCell", "uLayer", "uMix", "uHue", "uRound"]) U[n] = gl.getUniformLocation(prog, n);
+
+  // a layer is 1/24 of a gyroid period (about what 0.2 mm layers in 5 mm cells look like); 4 layers a second,
+  // each one snapping in quickly like the slicer preview stepping up
+  const LAYER = (Math.PI * 2) / 24, RATE = 4;
+  let t = 0, hue = Math.random();
+  const stop = Screensavers.loop((dt) => {
+    fit();
+    t += dt;
+    const W = c.width, H = c.height, m = Math.min(W, H);
+    const step = t * RATE, layer = Math.floor(step), f = step - layer;
+    const snap = Math.min(1, f / 0.35); // move to the next layer in the first third of its time
+    hue = (hue + dt / 240) % 1; // the "filament" colour changes over a few minutes
+    // the part drifts and breathes slowly
+    const cx = W / 2 + Math.sin(t * 0.037) * W * 0.06, cy = H / 2 + Math.cos(t * 0.029) * H * 0.06;
+    const hx = W * (0.36 + 0.04 * Math.sin(t * 0.021)), hy = H * (0.34 + 0.04 * Math.cos(t * 0.017));
+    gl.viewport(0, 0, W, H);
+    gl.uniform2f(U.uRes, W, H);
+    gl.uniform2f(U.uCenter, cx, cy);
+    gl.uniform2f(U.uHalf, hx, hy);
+    gl.uniform1f(U.uRound, m * 0.06);
+    gl.uniform1f(U.uCell, m * 0.16);
+    gl.uniform1f(U.uLayer, LAYER);
+    gl.uniform1f(U.uZ, (layer % 24) * LAYER); // the gyroid repeats every 2π in z
+    gl.uniform1f(U.uMix, snap * snap * (3 - 2 * snap));
+    gl.uniform1f(U.uHue, hue);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  });
+  return () => { stop(); const ext = gl.getExtension("WEBGL_lose_context"); if (ext) ext.loseContext(); c.remove(); };
 };
