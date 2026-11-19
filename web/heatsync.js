@@ -768,6 +768,12 @@ Panels.heat_sync = class extends Panel {
   }
   // ------------------------------------------------------------ the predicted run (toggle in the chart legend)
   predOn() { return !!Settings.get("hs_predict"); }
+  /** Just the Predicted toggle chip (same setting as the chart legends'). */
+  predToggle(onChange) {
+    const on = this.predOn();
+    return el("span", { class: "hs-pred-toggle" + (on ? " on" : ""), onclick: () => { Settings.set("hs_predict", !this.predOn()); onChange(); } },
+      el("i", { style: { background: "#7ee06a" } }), `${on ? "☑" : "☐"} Predicted`);
+  }
   /** Chart legend with the Predicted toggle; onChange redraws whichever view it's in. */
   legendEl(onChange) {
     const on = this.predOn();
@@ -1033,6 +1039,8 @@ Panels.heat_sync = class extends Panel {
     const ov = HeatSync.curve(p, r.T0, r.target, real.length);
     const reach = ov.T.findIndex((v) => v >= r.target);
     const rms = HeatSync.rms(p, r);
+    // the run the heater's current model (saved, else measured) predicts, to compare the edited constants with
+    const pred = this.predOn() ? this.predFor(r, real.length) : null;
     const name = r.heater === "heater_bed" ? "Bed" : prettify(r.heater);
     // one editable variable: value (tap to type) and − / + steps
     const row = (label, key, value, unit, digits, step, mult) => {
@@ -1066,14 +1074,19 @@ Panels.heat_sync = class extends Panel {
             el("span", {}, "Fit error"), el("b", {}, `${rms.toFixed(2)} °C RMS`),
             el("span", {}, "Model to target"), el("b", {}, reach >= 0 ? fmtSecs(reach) : "never"),
             el("span", {}, "Real to target"), el("b", {}, r.tReach !== null ? fmtSecs(r.tReach) : "not reached"),
-            ...(r.pp ? [el("span", {}, "T′ vs T line"), el("b", {}, `τ ${r.pp.tau.toFixed(0)} s · T∞ ${r.pp.tinf.toFixed(0)}° · R² ${r.pp.r2.toFixed(3)}`)] : [])),
+            ...(r.pp ? [el("span", {}, "T′ vs T line"), el("b", {}, `τ ${r.pp.tau.toFixed(0)} s · T∞ ${r.pp.tinf.toFixed(0)}° · R² ${r.pp.r2.toFixed(3)}`)] : []),
+            ...(this.predOn() ? (pred ? [el("span", {}, "Predicted to target"), el("b", {}, pred.reach >= 0 ? fmtSecs(pred.reach) : "never"),
+              el("span", {}, "Predicted from"), el("b", {}, pred.source),
+              el("span", {}, "Predicted fit error"), el("b", {}, `${HeatSync.rms(HeatSync.model(r.heater), r).toFixed(2)} °C RMS`)]
+              : [el("span", {}, "Predicted"), el("b", {}, "no model for this heater yet")]) : [])),
             el("div", { class: "desc", style: { marginTop: ".3em" } }, this.mNote || ""))),
         el("div", { class: "hs-right" },
           el("div", { class: "hs-legend" }, el("span", {}, el("i", { style: { background: "currentColor" } }), "Real"),
             el("span", {}, el("i", { style: { background: "#35d0e0" } }), "Model"),
-            el("span", {}, el("i", { style: { background: "#f0a028" } }), "T′"), el("span", {}, el("i", { style: { background: "#b77cf0" } }), "T″  (model dashed)")),
+            el("span", {}, el("i", { style: { background: "#f0a028" } }), "T′"), el("span", {}, el("i", { style: { background: "#b77cf0" } }), "T″  (model dashed)"),
+            this.predToggle(() => this.renderModel())),
           canvas)));
-    requestAnimationFrame(() => this.draw(r, ov, canvas));
+    requestAnimationFrame(() => this.draw(r, ov, canvas, { pred }));
   }
   activate() {
     // back to a test that's running, or one that finished while you were away
