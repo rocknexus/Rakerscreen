@@ -156,7 +156,8 @@ Panels.main_menu = class extends Panels.menu {
     this.el.innerHTML = "";
     this.activeHeater = null;
     this.heaters = new HeaterList(app, {
-      onName: (d) => { this.heaters.graph.toggle(d); this.heaters.refreshVisibility(); },
+      // tap a heater (tile) to set its temperature; sensors without a target still toggle their graph line
+      onName: (d) => { if (this.p.hasTarget(d)) this.showNumpad(d); else { this.heaters.graph.toggle(d); this.heaters.refreshVisibility(); } },
       onTemp: (d) => this.showNumpad(d),
       tiles: true, hideChips: true,
     });
