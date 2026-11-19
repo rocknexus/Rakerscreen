@@ -1621,8 +1621,13 @@ Panels.limits = class extends Panel {
     const list = el("div", { class: "scroll fill" });
     for (const o of this.opts) {
       const scale = el("input", { type: "range", class: "scale", min: "0", max: String(o.max), step: String(o.step) });
-      const val = el("span", { class: "scale-val" });
-      const paint = (v) => { scale.value = v; scale.style.setProperty("--pct", `${(v / o.max) * 100}%`); val.textContent = `${Number(v).toFixed(o.step < 1 ? 2 : 0)}`; };
+      // tap the number to type a value (Rakerscreen extra); the slider grows if it's past its end
+      const val = el("span", { class: "scale-val tappable", onclick: () => this.enterValue(o) });
+      const paint = (v) => {
+        v = Number(v);
+        if (v > o.max) { o.max = v; scale.max = String(v); }
+        scale.value = v; scale.style.setProperty("--pct", `${Math.min(100, (v / o.max) * 100)}%`); val.textContent = `${v.toFixed(o.step < 1 ? 2 : 0)}`;
+      };
       scale.addEventListener("input", () => { paint(scale.value); o.drag = true; });
       scale.addEventListener("change", () => { o.drag = false; this.gcode(`SET_VELOCITY_LIMIT ${o.cmd}=${scale.value}`); });
       const reset = Button("refresh", "Reset", "color1", { side: true, onclick: () => { paint(o.def); this.gcode(`SET_VELOCITY_LIMIT ${o.cmd}=${o.def}`); } });
@@ -1632,6 +1637,16 @@ Panels.limits = class extends Panel {
     }
     this.el.append(list);
     this.update({ toolhead: this.p.stat("toolhead") || {} });
+  }
+  enterValue(o) {
+    const cur = this.p.stat("toolhead", o.key);
+    const ratio = o.key === "minimum_cruise_ratio";
+    Input.number({
+      title: o.name, value: typeof cur === "number" ? Math.round(cur * 100) / 100 : o.def, unit: o.units || undefined, ok: "Set",
+      min: 0, max: ratio ? 0.99 : undefined, decimals: o.step < 1 ? 2 : 0,
+      desc: `Printer config: ${o.def}${o.units ? " " + o.units : ""}`,
+      onSubmit: (v) => { o.paint(v); this.gcode(`SET_VELOCITY_LIMIT ${o.cmd}=${v}`); },
+    });
   }
   update(data) {
     if (!data.toolhead) return;

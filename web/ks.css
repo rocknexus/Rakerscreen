@@ -180,6 +180,8 @@ input[type=range].scale { -webkit-appearance: none; appearance: none; flex: 1 1 
 input[type=range].scale::-webkit-slider-runnable-track { height: 2em; background: linear-gradient(to right, var(--switch-scale-bg) var(--pct, 0%), var(--active) var(--pct, 0%)); border: 1px solid var(--text-inv); }
 input[type=range].scale::-webkit-slider-thumb { -webkit-appearance: none; width: 2em; height: 2em; background: #e8e8e8; border-radius: .3em; }
 .scale-val { min-width: 3.5em; text-align: center; font-variant-numeric: tabular-nums; }
+.scale-val.tappable { cursor: pointer; padding: .45em .4em; border-radius: .4em; background: var(--active); min-width: 4.2em; }
+.scale-val.tappable:active { filter: brightness(1.3); }
 .progress { flex: 1 1 auto; height: 2em; background: var(--active); position: relative; margin: .5em; border: 1px solid var(--text-inv); }
 .progress > div { position: absolute; inset: 0 auto 0 0; background: var(--switch-scale-bg); }
 .progress > span { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }

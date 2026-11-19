@@ -112,7 +112,12 @@
       save({ panel: panelName(), title: panelTitle(), xp: x / innerWidth, yp: y / innerHeight, rect, what, text, viewport: [innerWidth, innerHeight] });
       closeBox();
     };
-    ta.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) submit(); });
+    // Enter sends, Shift+Enter makes a new line, Esc cancels
+    ta.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); submit(); }
+      else if (e.key === "Escape") { e.preventDefault(); closeBox(); }
+    });
+    ta.placeholder = "What should change here? (Enter sends, Shift+Enter new line)";
     box = make("div", { id: "ann-box" },
       make("div", { className: "what", textContent: `${panelName()} · ${what}` }), ta,
       make("div", { className: "row" }, make("button", { textContent: "Cancel", onclick: closeBox }), make("button", { className: "go", textContent: "Send note", onclick: submit })));
