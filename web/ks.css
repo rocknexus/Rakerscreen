@@ -119,6 +119,14 @@ html, body {
 .heater-grid .btn { margin: .2em; min-height: 2.9em; padding: 0 .5em; }
 .heater-grid .temp { font-variant-numeric: tabular-nums; white-space: nowrap; justify-content: center; }
 .graph_label { border-left: .4em solid transparent; padding-left: .25em; }
+/* temperature panel: extruders and bed as big tiles side by side */
+.heater-tiles { display: grid; gap: .3em; flex: 1 1 auto; min-height: 7em; max-height: 45%; margin: .2em .1em .3em 0; }
+.heater-tile { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.heater-tile > .btn { margin: 0; }
+.heater-tile > .btn:first-child { flex: 1 1 auto; min-height: 0; flex-direction: column; justify-content: center; border-bottom: .3em solid transparent; border-radius: .6em .6em 0 0; }
+.heater-tile > .btn:first-child img { height: 55%; max-height: 4.5em; width: auto; }
+.heater-tile > .btn.graph_label { border-left: 0; padding-left: 0; }
+.heater-tile > .btn.temp { flex: 0 0 auto; min-height: 2.6em; font-size: 1.15em; font-variant-numeric: tabular-nums; white-space: nowrap; justify-content: center; border-radius: 0 0 .6em .6em; background: var(--button-bg, rgba(255,255,255,.06)); }
 canvas.heatergraph { width: 100%; flex: 1 1 auto; min-height: 0; display: block; }
 
 /* ---------- Keypad ---------- */
@@ -190,6 +198,21 @@ body.kb-open .console-bar .entry { margin: .3em; padding: .5em; }
 .switch::after { content: ""; position: absolute; top: .2em; left: .2em; width: 2.1em; height: 2.1em; border-radius: 50%; background: #e8e8e8; transition: left .15s; }
 .switch.on { background: var(--switch-scale-bg); }
 .switch.on::after { left: 2.7em; }
+/* extrude panel: filament sensor banner, editable step labels, temperature presets */
+.sensor-banner { display: flex; gap: .2em; flex: 0 0 auto; margin: 0 .1em .2em; }
+.sensor-banner .filament_sensor { flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: .6em; padding: 0 .2em 0 .9em; border-radius: .5em; background: var(--active); }
+.sensor-banner .filament_sensor .name { font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sensor-banner .filament_sensor .state { flex: 1 1 auto; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sensor-banner .filament_sensor .switch { width: 3.6em; height: 1.8em; margin: .25em; }
+.sensor-banner .filament_sensor .switch::after { width: 1.4em; height: 1.4em; }
+.sensor-banner .filament_sensor .switch.on::after { left: 2em; }
+.sensor-banner .filament_sensor_detected { background: var(--echo); }
+.sensor-banner .filament_sensor_empty { background: var(--error); }
+.sensor-banner .filament_sensor_off { opacity: .75; }
+.inc-edit { gap: .4em; cursor: pointer; }
+.inc-edit img { height: 1.1em; width: 1.1em; opacity: .7; }
+.temp-presets { display: flex; flex-direction: column; gap: .2em; flex: 1 1 auto; padding-right: .2em; }
+.temp-presets .btn { flex: 1 0 3em; max-height: 5em; font-size: 1.1em; }
 
 /* ---------- Macros / settings rows ---------- */
 .frame-item { min-height: 4.5em; padding: .2em .3em; border-bottom: 1px solid rgba(255,255,255,.05); display: flex; align-items: center; gap: .5em; }

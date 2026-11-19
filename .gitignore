@@ -7,3 +7,6 @@ releases/
 # signing key: never commit; keep a private backup (see README "Signing key")
 *.keystore
 *.jks
+
+# point-out notes from tools/annotate.js (local review only)
+tools/feedback/

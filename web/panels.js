@@ -76,27 +76,37 @@ Panels.menu = class extends Panel {
 
 // ================================================================= shared heater list (main_menu.py / temperature.py)
 class HeaterList {
-  constructor(app, { onName, onTemp, selectable }) {
+  /** tiles: extruders and the bed become big tiles side by side above the list (temperature panel). */
+  constructor(app, { onName, onTemp, selectable, tiles }) {
     this.app = app; this.p = app.printer;
     this.graph = new HeaterGraph(this.p);
     this.rows = {};
     this.grid = el("div", { class: "heater-grid" }, el("div", { class: "hdr" }), el("div", { class: "hdr label" }, "Temp (°C)"));
-    this.el = el("div", { style: { display: "flex", flexDirection: "column", minHeight: 0, height: "100%" } },
-      // list keeps its natural height (scrolls only past 60%), graph takes the rest
-      el("div", { class: "scroll heater-list", style: { flex: "0 0 auto", maxHeight: "60%" } }, this.grid), this.graph.canvas);
+    this.tiles = el("div", { class: "heater-tiles" });
+    const list = el("div", { class: "scroll heater-list", style: { flex: "0 0 auto", maxHeight: tiles ? "35%" : "60%" } }, this.grid);
+    // list keeps its natural height (scrolls only past its max), graph takes the rest
+    this.el = el("div", { style: { display: "flex", flexDirection: "column", minHeight: 0, height: "100%" } }, this.tiles, list, this.graph.canvas);
     const devices = this.p.tempDevices().filter((d) => {
       const n = devName(d);
       return !n.startsWith("_") && !deviceFiltered(this.p, d) && typeof this.p.stat(d, "temperature") === "number";
     }).sort();
+    let listed = 0;
     for (const d of devices) {
       let name = prettify(devName(d));
       if (d === "heater_bed") name = "Heater Bed";
-      const nameBtn = Button(deviceIcon(this.p, d), name, null, { side: true, lines: 1, onclick: () => onName(d, nameBtn) });
+      const asTile = tiles && (d.startsWith("extruder") || d === "heater_bed");
+      const nameBtn = Button(deviceIcon(this.p, d), name, null, { side: !asTile, lines: 1, onclick: () => onName(d, nameBtn) });
       nameBtn.style.borderLeftColor = deviceColor(this.p, d);
       const tempBtn = Button(null, "", "temp", { lines: 1, onclick: () => { if (this.p.hasTarget(d)) onTemp(d, tempBtn); } });
-      this.grid.append(nameBtn, tempBtn);
+      if (asTile) {
+        nameBtn.style.borderBottomColor = deviceColor(this.p, d);
+        this.tiles.append(el("div", { class: "heater-tile" }, nameBtn, tempBtn));
+      } else { this.grid.append(nameBtn, tempBtn); listed++; }
       this.rows[d] = { nameBtn, tempBtn };
     }
+    if (!this.tiles.children.length) this.tiles.remove();
+    else this.tiles.style.gridTemplateColumns = `repeat(${this.tiles.children.length}, minmax(0, 1fr))`;
+    if (tiles && !listed) list.remove();
     this.refreshVisibility();
     this.update();
   }
@@ -303,7 +313,7 @@ Panels.temperature = class extends Panel {
     this.tempdeltas = getIncrements("temp_deltas");
     this.tempdelta = defaultIncrement("temp_deltas");
     this.showPreheat = !this.p.isPrinting();
-    this.heaters = new HeaterList(app, { onName: (d) => this.selectHeater(d), onTemp: (d) => this.showNumpad(d) });
+    this.heaters = new HeaterList(app, { onName: (d) => this.selectHeater(d), onTemp: (d) => this.showNumpad(d), tiles: true });
     this.right = el("div", { style: { minHeight: 0, minWidth: 0, display: "flex", flexDirection: "column" } });
     this.buildRight();
     this.layoutGrid();
@@ -340,7 +350,9 @@ Panels.temperature = class extends Panel {
   buildRight() {
     this.right.innerHTML = "";
     const cooldown = Button("cool-down", "Cooldown", "color4", { side: true, onclick: () => this.setTemperature("cooldown") });
-    const adjust = Button("fine-tune", null, "color3", { side: true, onclick: () => { this.showPreheat = !this.showPreheat; this.buildRight(); } });
+    // toggles between presets and +/- steps; lit while the steps are showing
+    const adjust = Button("plus-minus", "Nudge", "color3", { side: true, onclick: () => { this.showPreheat = !this.showPreheat; this.buildRight(); } });
+    adjust.classList.toggle("toggle_active", !this.showPreheat);
     adjust.style.justifyContent = "center";
     const body = this.showPreheat ? this.preheat() : this.deltaAdjust();
     const g = Grid(3, 3, [{ w: cooldown, x: 0, y: 0, cw: 2 }, { w: adjust, x: 2, y: 0 }, { w: body, x: 0, y: 1, cw: 3, ch: 2 }]);
@@ -430,33 +442,39 @@ Panels.extrude = class extends Panel {
     const xbox = el("div", { class: "grid", style: { gridAutoFlow: "column", gridAutoColumns: "minmax(0,1fr)" } });
     for (const e of this.p.tools.slice(0, 4)) {
       const n = this.p.toolNumber(e);
+      // tap the active extruder to set its temperature; tap another one to switch to it
       this.ext[e] = this.p.extruderCount === 1
-        ? Button("extruder", "", null, {})
-        : Button(`extruder-${n}`, `T${n}`, null, { onclick: (ev, b) => this.changeExtruder(e, b) });
+        ? Button("extruder", "", null, { onclick: () => this.showTempEntry(e) })
+        : Button(`extruder-${n}`, `T${n}`, null, { onclick: (ev, b) => (e === this.current ? this.showTempEntry(e) : this.changeExtruder(e, b)) });
       this.ext[e].classList.toggle("button_active", e === this.current);
       xbox.append(this.ext[e]);
     }
     xbox.append(this.btn.temperature);
     const dist = ToggleRow(this.distances, defaultIncrement("extrude_distances"), (v) => (this.distance = parseFloat(v)), undefined, this.vertical);
     const spd = ToggleRow(this.speeds, defaultIncrement("extrude_speeds"), (v) => (this.speed = parseFloat(v)), undefined, this.vertical);
-    const distbox = el("div", { style: { display: "flex", flexDirection: "column", justifyContent: "flex-end" } }, el("div", { class: "label fill" }, "Distance (mm)"), dist.el);
-    const speedbox = el("div", { style: { display: "flex", flexDirection: "column", justifyContent: "flex-end" } }, el("div", { class: "label fill" }, "Speed (mm/s)"), spd.el);
-    this.sensors = el("div", { style: { display: "flex", gap: "5px", justifyContent: "center", flexWrap: "wrap" } });
+    // tap a label to edit its steps (same editor as Settings → Increments)
+    const incLabel = (text, key) => el("div", { class: "label fill inc-edit", onclick: () => app.editIncrements(key) }, text, icon("edit"));
+    const distbox = el("div", { style: { display: "flex", flexDirection: "column", justifyContent: "flex-end" } }, incLabel("Distance (mm)", "extrude_distances"), dist.el);
+    const speedbox = el("div", { style: { display: "flex", flexDirection: "column", justifyContent: "flex-end" } }, incLabel("Speed (mm/s)", "extrude_speeds"), spd.el);
+    // filament sensors: a banner across the top of the page, tap one to turn it on or off
+    this.sensors = el("div", { class: "sensor-banner" });
     this.sensorEls = {};
     for (const s of this.p.filamentSensors.slice(0, 9)) {
       const name = s.split(" ").slice(1).join(" ").trim();
-      const sw = el("div", { class: "switch", onclick: () => this.toggleSensor(s, name) });
-      const box = el("div", { class: "filament_sensor", style: { display: "flex", alignItems: "center", borderRadius: "3em", padding: "0 0 0 .8em" } }, el("span", {}, prettify(name)), sw);
-      this.sensorEls[s] = { box, sw };
+      const state = el("span", { class: "state" });
+      const sw = el("div", { class: "switch" });
+      const box = el("div", { class: "filament_sensor", onclick: () => this.toggleSensor(s, name) }, el("span", { class: "name" }, prettify(name)), state, sw);
+      this.sensorEls[s] = { box, sw, state };
       this.sensors.append(box);
     }
     const b = this.btn;
     const g = this.vertical
-      ? Grid(4, 7, [{ w: xbox, x: 0, y: 0, cw: 4 }, { w: b.extrude, x: 0, y: 1, cw: 2 }, { w: b.retract, x: 2, y: 1, cw: 2 }, { w: b.load, x: 0, y: 2, cw: 2 }, { w: b.unload, x: 2, y: 2, cw: 2 }, { w: distbox, x: 0, y: 4, cw: 4 }, { w: speedbox, x: 0, y: 5, cw: 4 }, { w: this.sensors, x: 0, y: 6, cw: 4 }])
-      : Grid(4, 4, [{ w: xbox, x: 0, y: 0, cw: 4 }, { w: b.extrude, x: 0, y: 1 }, { w: b.load, x: 1, y: 1 }, { w: b.unload, x: 2, y: 1 }, { w: b.retract, x: 3, y: 1 }, { w: distbox, x: 0, y: 2, cw: 2 }, { w: speedbox, x: 2, y: 2, cw: 2 }, { w: this.sensors, x: 0, y: 3, cw: 4 }]);
-    if (!this.p.filamentSensors.length) g.style.gridTemplateRows = this.vertical ? "" : "1fr 1fr auto 0";
+      ? Grid(4, 6, [{ w: xbox, x: 0, y: 0, cw: 4 }, { w: b.extrude, x: 0, y: 1, cw: 2 }, { w: b.retract, x: 2, y: 1, cw: 2 }, { w: b.load, x: 0, y: 2, cw: 2 }, { w: b.unload, x: 2, y: 2, cw: 2 }, { w: distbox, x: 0, y: 4, cw: 4 }, { w: speedbox, x: 0, y: 5, cw: 4 }])
+      : Grid(4, 3, [{ w: xbox, x: 0, y: 0, cw: 4 }, { w: b.extrude, x: 0, y: 1 }, { w: b.load, x: 1, y: 1 }, { w: b.unload, x: 2, y: 1 }, { w: b.retract, x: 3, y: 1 }, { w: distbox, x: 0, y: 2, cw: 2 }, { w: speedbox, x: 2, y: 2, cw: 2 }]);
+    if (!this.vertical) g.style.gridTemplateRows = "1fr 1fr auto";
     g.classList.add("fill");
-    this.el.append(g);
+    this.main = el("div", { class: "fill", style: { display: "flex", flexDirection: "column" } }, this.p.filamentSensors.length ? this.sensors : null, g);
+    this.el.append(this.main);
     this.update(Object.fromEntries(this.p.tools.map((t) => [t, {}])));
     this.updateSensors();
   }
@@ -478,21 +496,60 @@ Panels.extrude = class extends Panel {
       for (const [e, b] of Object.entries(this.ext)) b.classList.toggle("button_active", e === this.current);
     }
     if (this.p.filamentSensors.some((s) => s in data)) this.updateSensors();
+    if (this.tempEntry && this.tempEntry in data) this.updateTempHead();
   }
   onGcodeResponse(t) {
     if (t.includes("action:cancel") || t.includes("action:paused")) this.enable(true);
     else if (t.includes("action:resumed")) this.enable(false);
   }
   updateSensors() {
-    for (const [s, { box, sw }] of Object.entries(this.sensorEls)) {
+    for (const [s, { box, sw, state }] of Object.entries(this.sensorEls)) {
       const en = !!this.p.stat(s, "enabled"), det = !!this.p.stat(s, "filament_detected");
       sw.classList.toggle("on", en);
       box.classList.toggle("filament_sensor_detected", en && det);
       box.classList.toggle("filament_sensor_empty", en && !det);
-      box.style.background = en ? (det ? "var(--echo)" : "var(--error)") : "transparent";
+      box.classList.toggle("filament_sensor_off", !en);
+      state.textContent = !en ? "Off" : det ? "Filament detected" : "No filament";
     }
   }
   toggleSensor(s, name) { this.gcode(`SET_FILAMENT_SENSOR SENSOR=${name} ENABLE=${this.p.stat(s, "enabled") ? 0 : 1}`); }
+
+  /** Extruder temperature: presets on the left, keypad on the right (Rakerscreen extra). */
+  showTempEntry(ext) {
+    if (this.tempEntry) this.hideTempEntry();
+    this.tempEntry = ext;
+    const set = (v) => { if (this.app.setTargetTemp(ext, v)) this.hideTempEntry(); };
+    const presets = Object.entries(Settings.get("preheat") || {}).filter(([, o]) => typeof o.extruder === "number");
+    const list = el("div", { class: "scroll temp-presets" },
+      ...presets.map(([n, o], i) => Button(null, `${n}  ${o.extruder}°`, `color${(i % 4) + 1}`, { lines: 1, onclick: () => set(o.extruder) })),
+      Button(null, "Off  0°", "color4", { lines: 1, onclick: () => set(0) }));
+    const name = this.p.extruderCount > 1 ? `T${this.p.toolNumber(ext)}` : "Extruder";
+    this.tempHead = el("div", { class: "label" });
+    const left = el("div", { style: { display: "flex", flexDirection: "column", minHeight: 0, minWidth: 0 } }, this.tempHead, list);
+    const kp = Keypad((v) => set(v), () => this.hideTempEntry(), pidExtra(this.app, ext));
+    const g = Grid(2, 1, [{ w: left, x: 0, y: 0 }, { w: kp, x: 1, y: 0 }]);
+    g.classList.add("fill");
+    this.tempView = g;
+    this.tempName = name;
+    this.updateTempHead();
+    this.main.style.display = "none";
+    this.el.append(g);
+    this.app.updateActionBar();
+  }
+  updateTempHead() {
+    if (!this.tempEntry || !this.tempHead) return;
+    const t = this.p.stat(this.tempEntry, "temperature"), tg = this.p.stat(this.tempEntry, "target");
+    this.tempHead.textContent = `${this.tempName}: ${typeof t === "number" ? t.toFixed(0) : "?"}° → ${tg ? tg.toFixed(0) : 0}°`;
+  }
+  hideTempEntry() {
+    this.tempEntry = null;
+    if (this.tempView) { this.tempView.remove(); this.tempView = null; }
+    this.main.style.display = "flex";
+    this.app.updateActionBar();
+  }
+  deactivate() { if (this.tempEntry) this.hideTempEntry(); }
+  canGoBack() { return !!this.tempEntry; }
+  back() { if (this.tempEntry) { this.hideTempEntry(); return true; } return false; }
   changeExtruder(e, b) { this.gcode(`T${this.p.toolNumber(e)}`, b); }
   check(method, dir, btn) {
     const ext = this.current || "extruder";

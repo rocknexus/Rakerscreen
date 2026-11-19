@@ -1,6 +1,7 @@
 // Minimal Moonraker simulator for developing Rakerscreen without a printer.
 // Serves ../web over HTTP and a JSON-RPC WebSocket at /websocket on the same port.
-//   node tools/mock_moonraker.js [port]      (default 7125)
+//   node tools/mock_moonraker.js [port] [--lan]   (default 7125; --lan: reachable from other devices)
+// Adds a "Point" overlay (tools/annotate.js) for leaving notes on the screen; they land in tools/feedback/notes.json.
 // No dependencies: implements just enough of RFC 6455 for text frames.
 "use strict";
 const http = require("http");
@@ -8,7 +9,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 
-const PORT = parseInt(process.argv[2] || process.env.PORT || "7125", 10);
+const PORT = parseInt(process.argv.slice(2).find((a) => /^\d+$/.test(a)) || process.env.PORT || "7125", 10);
 const WEB = path.join(__dirname, "..", "web");
 
 // ------------------------------------------------------------------ simulated printer
@@ -328,17 +329,61 @@ function handle(client, text) {
 }
 
 const MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png" };
+// ---- point-out notes (tools/annotate.js): stored in tools/feedback/notes.json, one array of notes
+const NOTES = path.join(__dirname, "feedback", "notes.json");
+const readNotes = () => { try { return JSON.parse(fs.readFileSync(NOTES, "utf8")); } catch (e) { return []; } };
+const writeNotes = (list) => { fs.mkdirSync(path.dirname(NOTES), { recursive: true }); fs.writeFileSync(NOTES, JSON.stringify(list, null, 2)); };
+function notesApi(req, res) {
+  const send = (list) => { res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" }); res.end(JSON.stringify(list)); };
+  if (req.method === "GET") { send(readNotes()); return; }
+  if (req.method === "DELETE") {
+    const id = Number(new URL(req.url, "http://x").searchParams.get("id"));
+    const list = readNotes().filter((n) => n.id !== id);
+    writeNotes(list); console.log(`[note] #${id} deleted`); send(list); return;
+  }
+  if (req.method === "POST") {
+    let body = "";
+    req.on("data", (c) => { body += c; if (body.length > 100000) req.destroy(); });
+    req.on("end", () => {
+      let n; try { n = JSON.parse(body); } catch (e) { res.writeHead(400); res.end(); return; }
+      const list = readNotes();
+      n.id = list.reduce((m, x) => Math.max(m, x.id || 0), 0) + 1;
+      n.time = new Date().toISOString();
+      n.status = "open";
+      list.push(n); writeNotes(list);
+      console.log(`[note] #${n.id} ${n.panel}: ${n.what} -> ${JSON.stringify(n.text)}`);
+      send(list);
+    });
+    return;
+  }
+  res.writeHead(405); res.end();
+}
+
 const server = http.createServer((req, res) => {
   const url = decodeURIComponent(req.url.split("?")[0]);
+  if (url === "/__notes") { notesApi(req, res); return; }
+  if (url === "/__annotate.js") {
+    fs.readFile(path.join(__dirname, "annotate.js"), (err, data) => { res.writeHead(err ? 404 : 200, { "Content-Type": "text/javascript", "Cache-Control": "no-store" }); res.end(data || ""); });
+    return;
+  }
   const thumb = url.match(/^\/server\/files\/gcodes\/(?:.*\/)?\.thumbs\/(.+)-\d+x\d+\.png$/);
   if (thumb) { res.writeHead(200, { "Content-Type": "image/svg+xml", "Access-Control-Allow-Origin": "*" }); res.end(thumbSvg(thumb[1])); return; }
   const file = path.join(WEB, url === "/" ? "index.html" : url);
   if (!file.startsWith(WEB)) { res.writeHead(403); res.end(); return; }
   fs.readFile(file, (err, data) => {
     if (err) { res.writeHead(404); res.end("not found"); return; }
+    // the point-out overlay rides along with the page here only, never in the APK
+    if (path.basename(file) === "index.html") data = Buffer.from(String(data).replace("</body>", '<script src="/__annotate.js"></script>\n</body>'));
     res.writeHead(200, { "Content-Type": MIME[path.extname(file)] || "application/octet-stream", "Cache-Control": "no-store" });
     res.end(data);
   });
 });
 server.on("upgrade", (req, socket) => { if (req.url.startsWith("/websocket")) wsAccept(req, socket); else socket.destroy(); });
-server.listen(PORT, "127.0.0.1", () => console.log(`Mock Moonraker on http://127.0.0.1:${PORT}  (UI at /, websocket at /websocket)`));
+// --lan also listens on the network, so a phone on the same Wi-Fi can open it
+const LAN = process.argv.includes("--lan");
+server.listen(PORT, LAN ? "0.0.0.0" : "127.0.0.1", () => {
+  console.log(`Mock Moonraker on http://127.0.0.1:${PORT}  (UI at /, websocket at /websocket)`);
+  if (LAN) for (const list of Object.values(require("os").networkInterfaces())) for (const a of list || []) {
+    if (a.family === "IPv4" && !a.internal) console.log(`  on the network: http://${a.address}:${PORT}/`);
+  }
+});
