@@ -318,33 +318,48 @@ Screensavers.savers.status = (host, app) => {
 // ================================================================= Gyroid layers: sweeping up through the slices of gyroid infill
 /* The gyroid sin x·cos y + sin y·cos z + sin z·cos x = 0 cut at height z is the line pattern slicers print as gyroid
    infill; moving z up layer by layer makes it flow. Drawn in a fragment shader over the whole screen: distance to the
-   curve ≈ |f| / |∇f|, with the last few layers fading below the current one. One new layer per frame at 24 frames a
-   second (nothing is drawn in between); the colour shifts over minutes so nothing burns in. */
+   curve ≈ |f| / |∇f|, with the last few layers fading below the current one. 24 frames a second (nothing is drawn in
+   between), a quarter layer per frame. Lava-lamp look: the plane is warped by slow, large waves, the cell size swells
+   and shrinks from place to place, and the height runs ahead in some areas and behind in others, so blobs of the
+   pattern bulge, drift and morph instead of marching in step. The colour shifts over minutes so nothing burns in. */
 Screensavers.savers.gyroid = (host) => {
   const { c, fit } = Screensavers.canvas(host);
   const gl = c.getContext("webgl", { antialias: false, alpha: false });
   if (!gl) { c.remove(); throw new Error("no WebGL"); }
   const vs = "attribute vec2 aP; void main() { gl_Position = vec4(aP, 0.0, 1.0); }";
   const fs = `precision highp float;
-    uniform float uZ, uCell, uLayer, uHue;
+    uniform float uZ, uCell, uLayer, uHue, uT;
     float gy(vec2 p, float z, out float g) {
       float sx = sin(p.x), cx = cos(p.x), sy = sin(p.y), cy = cos(p.y), sz = sin(z), cz = cos(z);
       vec2 grad = vec2(cx * cy - sz * sx, -sx * sy + cy * cz);
       g = max(length(grad), 0.25);
       return sx * cy + sy * cz + sz * cx;
     }
+    // slow lava-lamp warp of the plane (in gyroid units, one cell = 2π), and how far ahead in z each place runs
+    vec2 warp(vec2 p, out float dz, out float sc) {
+      float t = uT;
+      vec2 q = p * 0.11;
+      sc = 1.0 + 0.28 * sin(q.x * 0.9 + t * 0.07) * cos(q.y * 1.1 - t * 0.05);   // cells swell and shrink
+      vec2 w = vec2(sin(q.y * 1.3 + t * 0.11) + 0.6 * sin(q.x * 2.1 - q.y * 0.7 + t * 0.17),
+                    cos(q.x * 1.2 - t * 0.09) + 0.6 * cos(q.y * 1.9 + q.x * 0.8 - t * 0.13));
+      dz = 1.6 * sin(q.x * 0.8 + q.y * 0.6 + t * 0.06) * cos(q.y * 0.9 - t * 0.08);
+      return p * sc + w * 2.2;
+    }
     // distance in pixels from the gyroid line at height z
     float line(vec2 px, float z) {
-      vec2 p = px / uCell * 6.2831853;
-      float g, f = gy(p, z, g);
-      return abs(f) / g * uCell / 6.2831853;
+      float dz, sc;
+      vec2 p = warp(px / uCell * 6.2831853, dz, sc);
+      float g, f = gy(p, z + dz, g);
+      return abs(f) / (g * sc) * uCell / 6.2831853;
     }
     vec3 hue(float h) { return clamp(abs(mod(h * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0); }
     void main() {
       vec2 px = gl_FragCoord.xy;
       float w = uCell * 0.045;                 // extrusion width in pixels
       vec3 col = vec3(0.02, 0.02, 0.025);
-      vec3 fil = mix(hue(uHue), vec3(1.0), 0.15);
+      vec2 q = px / uCell;
+      // the colour drifts a little across the screen too, like light through wax
+      vec3 fil = mix(hue(uHue + 0.06 * sin(q.x * 0.35 + uT * 0.05) * cos(q.y * 0.3 - uT * 0.04)), vec3(1.0), 0.15);
       // the layers below fade out under the current one
       for (int k = 3; k >= 1; k--) {
         float a = smoothstep(w, w * 0.4, line(px, uZ - float(k) * uLayer));
@@ -364,23 +379,24 @@ Screensavers.savers.gyroid = (host) => {
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
   const aP = gl.getAttribLocation(prog, "aP");
   gl.enableVertexAttribArray(aP); gl.vertexAttribPointer(aP, 2, gl.FLOAT, false, 0, 0);
-  const U = {}; for (const n of ["uZ", "uCell", "uLayer", "uHue"]) U[n] = gl.getUniformLocation(prog, n);
+  const U = {}; for (const n of ["uZ", "uCell", "uLayer", "uHue", "uT"]) U[n] = gl.getUniformLocation(prog, n);
 
-  // a layer is 1/24 of a gyroid period (about what 0.2 mm layers in 5 mm cells look like)
-  const LAYER = (Math.PI * 2) / 24, FPS = 24;
+  // a layer is 1/24 of a gyroid period (about what 0.2 mm layers in 5 mm cells look like); a quarter layer per frame
+  const LAYER = (Math.PI * 2) / 24, FPS = 24, PER_FRAME = 0.25;
   let t = 0, hue = Math.random(), shown = -1;
   const stop = Screensavers.loop((dt) => {
     const resized = fit();
     t += dt;
     hue = (hue + dt / 240) % 1; // the "filament" colour changes over a few minutes
-    const layer = Math.floor(t * FPS);
-    if (layer === shown && !resized) return; // the canvas keeps the last frame
-    shown = layer;
+    const frame = Math.floor(t * FPS);
+    if (frame === shown && !resized) return; // the canvas keeps the last frame
+    shown = frame;
     const W = c.width, H = c.height;
     gl.viewport(0, 0, W, H);
     gl.uniform1f(U.uCell, Math.min(W, H) * 0.16);
     gl.uniform1f(U.uLayer, LAYER);
-    gl.uniform1f(U.uZ, (layer % 24) * LAYER); // the gyroid repeats every 2π in z
+    gl.uniform1f(U.uZ, (frame % (24 / PER_FRAME)) * LAYER * PER_FRAME); // the gyroid repeats every 2π in z
+    gl.uniform1f(U.uT, (frame / FPS) % 36000);
     gl.uniform1f(U.uHue, hue);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   });
