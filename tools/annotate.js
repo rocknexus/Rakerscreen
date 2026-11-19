@@ -9,6 +9,10 @@
   }
 
   const css = `
+  /* the app hides the mouse pointer (touchscreen default); keep it visible while reviewing */
+  html body:not(.ann-x), html body:not(.ann-x) * { cursor: auto !important; }
+  html body:not(.ann-x) .btn, html body:not(.ann-x) #ann-bar button, html body:not(.ann-x) .ann-pin { cursor: pointer !important; }
+  html body:not(.ann-x) #ann-shield { cursor: crosshair !important; }
   #ann-bar { position: fixed; right: 10px; bottom: 10px; z-index: 2000; display: flex; gap: 6px; font: 15px/1.2 system-ui, sans-serif; }
   #ann-bar button { border: 0; border-radius: 22px; padding: 10px 14px; background: #e8a33d; color: #111; font: inherit; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,.5); cursor: pointer; }
   #ann-bar button.on { background: #ff5a36; color: #fff; }
