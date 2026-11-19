@@ -401,14 +401,16 @@ const HeatSync = {
   /** heat_sync.cfg for Klipper: the models as macro variables and HEAT_SYNC BED= EXTRUDER= [WAIT=1], which starts
       the slower heater first and the other after the difference, so both reach their targets together.
       Time to target in the macro is the two-lag curve's long-run form, L + τ·ln(τ/(τ−τs)) + τ·ln(x0·(1+qτ·x1) / (x1·(1+qτ·x0)))
-      with x = T∞ − T (q, the loss curvature, is 0 for a straight T′ line), within a second or two of the app's prediction. */
+      with x = T∞ − T (q, the loss curvature, is 0 for a straight T′ line), within a second or two of the app's prediction.
+      x0 is from the heater's start, T0 + κ·(T0 − room): a bed still warm from a print gets there sooner. */
   cfg() {
     const mb = this.model("heater_bed"), me = this.model("extruder");
     if (!mb || !me) return null;
     const n = (v, d) => (typeof v === "number" && isFinite(v) ? v.toFixed(d) : "0");
     const src = (m) => (m.custom ? "saved model (Model page)" : `measured, median of ${m.n} heat-up${m.n === 1 ? "" : "s"}`);
     const vars = (p, m) => [`variable_${p}_lag: ${n(m.lag, 1)}`, `variable_${p}_tau: ${n(m.tau, 1)}`, `variable_${p}_taus: ${n(m.taus || 0, 2)}`, `variable_${p}_tinf: ${n(m.tinf, 1)}`,
-      `variable_${p}_q: ${m.q ? String(Number(m.q.toPrecision(4))) : "0"}`];
+      `variable_${p}_q: ${m.q ? String(Number(m.q.toPrecision(4))) : "0"}`,
+      `variable_${p}_kappa: ${n(m.kappa || 0, 3)}`, `variable_${p}_room: ${n(m.tamb !== undefined ? m.tamb : 25, 1)}`];
     return [
       "# heat_sync.cfg, written by Rakerscreen (Settings → Heat Sync → Export) on " + (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${d.toTimeString().slice(0, 5)}`; })(),
       "# Export rewrites this file: change the model in the app, not here.",
@@ -433,16 +435,17 @@ const HeatSync = {
       "    {%- for i in range(12) -%}{%- set ns.s = ns.s + y ** (2 * i + 1) / (2 * i + 1) -%}{%- endfor -%}",
       "    { ns.k + 2 * ns.s }",
       "  {%- endmacro %}",
-      "  {% macro secs(l, tau, taus, tinf, q, t0, t) -%}",
-      "    {%- if t <= t0 -%}0{%- elif t >= tinf - 0.5 -%}-1",
+      "  {% macro secs(l, tau, taus, tinf, q, k, room, s0, t) -%}",
+      "    {%- set t0 = [s0 + k * ([s0 - room, 0]|max), tinf - 0.5]|min -%}",
+      "    {%- if t <= s0 -%}0{%- elif t >= tinf - 0.5 -%}-1",
       "    {%- else -%}{ [0, l + tau * (ln(tau * (tinf - t0) * (1 + q * tau * (tinf - t)) / ((tau - taus) * (tinf - t) * (1 + q * tau * (tinf - t0))))|float)]|max }{%- endif -%}",
       "  {%- endmacro %}",
       "  {% set v = printer[\"gcode_macro HEAT_SYNC\"] %}",
       "  {% set bed = params.BED|default(0)|float %}",
       "  {% set ext = params.EXTRUDER|default(0)|float %}",
       "  {% set wait = params.WAIT|default(1)|int %}",
-      "  {% set tb = secs(v.bed_lag, v.bed_tau, v.bed_taus, v.bed_tinf, v.bed_q, printer.heater_bed.temperature, bed)|float %}",
-      "  {% set te = secs(v.extruder_lag, v.extruder_tau, v.extruder_taus, v.extruder_tinf, v.extruder_q, printer.extruder.temperature, ext)|float %}",
+      "  {% set tb = secs(v.bed_lag, v.bed_tau, v.bed_taus, v.bed_tinf, v.bed_q, v.bed_kappa, v.bed_room, printer.heater_bed.temperature, bed)|float %}",
+      "  {% set te = secs(v.extruder_lag, v.extruder_tau, v.extruder_taus, v.extruder_tinf, v.extruder_q, v.extruder_kappa, v.extruder_room, printer.extruder.temperature, ext)|float %}",
       "  {% if tb < 0 or te < 0 %}",
       "    RESPOND TYPE=error MSG=\"HEAT_SYNC: a target is at or above that heater's full-power ceiling, heating both now\"",
       "    M140 S{bed}",
@@ -487,47 +490,66 @@ const HeatSync = {
      model above; when that line bends (losses growing faster than linearly, e.g. radiation off a hot bed) the heater
      follows h′ = (T∞ − h)/τ + q·(T∞ − h)², the sensor s′ = (h − s)/τs, stepped numerically. q = 0 is the formula above. */
   CUSTOM: "heat_sync_models",
-  /** Model curve on a 1 s grid; once it reaches the target it holds there (an ideal PID). */
-  curve(p, T0, target, n) {
-    if (p.q) return this.curveQ(p, T0, target, n);
+  /** Where the heater starts: h0 given, else from the model's warm-start factor (a bed still warm from a print has its
+      plate and heater ahead of the thermistor: h0 − T0 = κ·(T0 − room)), else at the sensor's temperature. */
+  h0For(p, T0, h0) {
+    if (typeof h0 === "number") return h0;
+    if (p.kappa) return Math.min(p.tinf - 0.5, T0 + p.kappa * Math.max(0, T0 - (p.tamb !== undefined ? p.tamb : 25)));
+    return T0;
+  },
+  /** Model curve on a 1 s grid; once it reaches the target it holds there (an ideal PID).
+      h0: the heater's temperature at the start (default: see h0For). During a positive lag the heater is held there
+      and the sensor settles towards it; then full power. */
+  curve(p, T0, target, n, h0) {
+    h0 = this.h0For(p, T0, h0);
+    if (p.q) return this.curveQ(p, T0, target, n, h0);
     const T = new Array(n), d1 = new Array(n), d2 = new Array(n);
-    const A = p.tinf - T0, tau = Math.max(1, p.tau);
+    const tau = Math.max(1, p.tau), Tinf = p.tinf, L = p.lag;
     const ts = Math.min(Math.max(0.2, p.taus || 0), tau * 0.995);
+    // at the end of the lag: heater h0, sensor sL; after it h = T∞ − (T∞ − h0)·e^(−u/τ), s = T∞ − B·e^(−u/τ) + C·e^(−u/τs)
+    const sL = L > 0 ? h0 + (T0 - h0) * Math.exp(-L / ts) : T0;
+    const B = ((Tinf - h0) * tau) / (tau - ts), C = sL - Tinf + B;
     let held = false;
     for (let i = 0; i < n; i++) {
-      const u = i - p.lag;
       if (held) { T[i] = target; d1[i] = 0; d2[i] = 0; continue; }
-      if (u <= 0) { T[i] = T0; d1[i] = 0; d2[i] = 0; continue; }
-      const e1 = Math.exp(-u / tau), e2 = Math.exp(-u / ts), k = tau - ts;
-      T[i] = T0 + A * (1 - (tau * e1 - ts * e2) / k);
-      d1[i] = (A * (e1 - e2)) / k;
-      d2[i] = (A * (e2 / ts - e1 / tau)) / k;
+      if (L > 0 && i <= L) {
+        const e = Math.exp(-i / ts);
+        T[i] = h0 + (T0 - h0) * e; d1[i] = ((h0 - T0) * e) / ts; d2[i] = -d1[i] / ts;
+      } else {
+        const u = i - L, e1 = Math.exp(-u / tau), e2 = Math.exp(-u / ts);
+        T[i] = Tinf - B * e1 + C * e2;
+        d1[i] = (B / tau) * e1 - (C / ts) * e2;
+        d2[i] = -(B / (tau * tau)) * e1 + (C / (ts * ts)) * e2;
+      }
       if (T[i] >= target) { T[i] = target; held = true; }
     }
     return { T, d1, d2 };
   },
   /** The same with loss curvature q: heater and sensor stepped (midpoint method, 0.1 s steps). */
-  curveQ(p, T0, target, n) {
+  curveQ(p, T0, target, n, h0) {
+    h0 = this.h0For(p, T0, h0);
     const T = new Array(n), d1 = new Array(n), d2 = new Array(n);
-    const tau = Math.max(1, p.tau), ts = Math.min(Math.max(0.2, p.taus || 0), tau * 0.995), q = p.q, tinf = p.tinf;
+    const tau = Math.max(1, p.tau), ts = Math.min(Math.max(0.2, p.taus || 0), tau * 0.995), q = p.q || 0, tinf = p.tinf, L = p.lag;
     const rate = (h) => { const x = Math.max(0, tinf - h); return x / tau + q * x * x; };
-    const sub = 10; // steps per second
-    let h = T0, s = T0, held = false;
+    const sub = p.sub || 10; // steps per second (fewer while a fit searches)
+    let h = h0, s = T0, held = false;
     for (let i = 0; i < n; i++) {
-      if (!held && i - p.lag > 0 && (i > 0 || p.lag < 0)) {
-        // run the heater only for the part of this second after the lag (at i = 0: from a negative lag up to 0)
-        const from = i === 0 ? p.lag : Math.max(i - 1, p.lag), steps = Math.max(1, Math.round((i - from) * sub)), d = (i - from) / steps;
+      // from the previous second (at i = 0: from a negative lag) up to this one; power on after the lag
+      const from = i === 0 ? Math.min(0, L) : i - 1;
+      if (!held && i > from) {
+        const steps = Math.max(1, Math.round((i - from) * sub)), d = (i - from) / steps;
         for (let k = 0; k < steps; k++) {
-          const h1 = h + 0.5 * d * rate(h), s1 = s + 0.5 * d * (h - s) / ts;
-          s += d * (h1 - s1) / ts;
-          h += d * rate(h1);
+          const on = from + (k + 0.5) * d > L;
+          const a1 = on ? rate(h) : 0, b1 = (h - s) / ts;
+          const hm = h + 0.5 * d * a1, sm = s + 0.5 * d * b1;
+          h += d * (on ? rate(hm) : 0);
+          s += (d * (hm - sm)) / ts;
         }
       }
       if (held) { T[i] = target; d1[i] = 0; d2[i] = 0; continue; }
       T[i] = s;
       d1[i] = (h - s) / ts;
-      d2[i] = (rate(h) - d1[i]) / ts;
-      if (i - p.lag <= 0) { d1[i] = 0; d2[i] = 0; }
+      d2[i] = ((i > L ? rate(h) : 0) - d1[i]) / ts;
       if (T[i] >= target) { T[i] = target; held = true; }
     }
     return { T, d1, d2 };
@@ -620,6 +642,89 @@ const HeatSync = {
     if (rms5 <= rms4 * 0.85 && Math.abs(b.x[4]) >= 0.01) return { ...withQ(b.x), rms: rms5 };
     return { ...p4, rms: rms4 };
   },
+  /** One model for many runs: the constants (lag, T∞, τ, τs, and loss curvature if it helps) that fit all of them
+      at once, each run counting the same, so the model varies as little as possible from run to run.
+      Each run also gets its own start state: d, how far the heater is ahead of the sensor when the heat-up starts
+      (a bed still warm from a print isn't at rest), and a time shift of up to ±1.5 s (the log shows a new target up to
+      a second late). Then κ: how d grows with the start temperature, d ≈ κ·(T0 − room), which lets the model predict
+      heat-ups from a warm start. Alternates: each run's start with the constants held, then the constants with the
+      starts held. onProgress(text) between rounds; resolves with null if fewer than 2 runs can be used. */
+  async fitMany(runs, onProgress = () => {}, curv = true) {
+    const yieldUI = () => new Promise((res) => setTimeout(res, 0));
+    const data = runs.map((r) => { const T = this.realCurve(r); return { r, T, n: this.fitLen(r, T.length), d: 0, sh: 0 }; })
+      .filter((x) => x.n >= 15 && x.r.target - x.r.T0 >= 10);
+    if (data.length < 2) return null;
+    const T0s = data.map((x) => x.r.T0), tamb = Math.min(...T0s) < 35 ? Math.min(...T0s) : 25;
+    const sse = (p, x, d = x.d, sh = x.sh) => {
+      const q = { ...p, lag: p.lag + sh };
+      const c = this.curve(q, x.r.T0, Infinity, x.n, x.r.T0 + d);
+      let s = 0;
+      for (let i = 0; i < x.n; i++) { const e = c.T[i] - x.T[i]; s += e * e; }
+      return s / x.n;
+    };
+    const total = (p) => data.reduce((s, x) => s + sse(p, x), 0) / data.length;
+    const shared = (v) => ({ lag: v[0], tinf: v[1], tau: Math.exp(v[2]), taus: Math.exp(v[3]) });
+    // start from the median of the cold runs' own fits (all runs' if none started cold)
+    const cold = data.filter((x) => x.r.T0 - tamb < 8);
+    const own = (cold.length ? cold : data).map((x) => this.fit(x.r, false)).filter(Boolean);
+    const med = (k) => this.median(own.map((f) => f[k]));
+    let p = own.length ? { lag: med("lag"), tinf: med("tinf"), tau: med("tau"), taus: med("taus") } : { lag: 1, tinf: Math.max(...data.map((x) => x.r.target)) + 60, tau: 150, taus: 10 };
+    const maxTarget = Math.max(...data.map((x) => x.r.target));
+    const badShared = (q) => !(q.taus < q.tau * 0.99) || q.tinf <= maxTarget + 0.5 || q.lag < -2 || q.lag > 60;
+    for (let round = 0; round < 4; round++) {
+      onProgress(`Fitting ${data.length} runs: round ${round + 1} of 4…`);
+      await yieldUI();
+      // each run's start (heater ahead of the sensor by d, time shift sh), constants held
+      for (const x of data) {
+        const span = Math.max(5, p.tinf - x.r.T0 - 1);
+        const b = this.nelder((v) => (Math.abs(v[1]) > 1.5 || v[0] < -span || v[0] > span ? 1e12 : sse(p, x, v[0], v[1])), [x.d, x.sh], [3, 0.5], 120);
+        x.d = b.x[0]; x.sh = b.x[1];
+      }
+      await yieldUI();
+      // the constants, starts held
+      const a = this.nelder((v) => { const q = shared(v); return badShared(q) ? 1e12 : total(q); },
+        [p.lag, p.tinf, Math.log(p.tau), Math.log(p.taus)], [1, 8, 0.15, 0.3], 400);
+      p = shared(a.x);
+    }
+    let err = total(p);
+    // loss curvature: the same alternation with the curvature added (searching at 3 steps a second), kept only if it
+    // fits clearly better (RMS down 15 % or more) at full resolution; otherwise the runs' starts go back as they were
+    if (curv) {
+      const A = Math.max(1, p.tinf - tamb);
+      const withQ = (v, sub) => ({ ...shared(v), q: v[4] / (Math.exp(v[2]) * A), sub });
+      const keep = data.map((x) => [x.d, x.sh]);
+      let v5 = [p.lag, p.tinf, Math.log(p.tau), Math.log(p.taus), 0];
+      for (let round = 0; round < 3; round++) {
+        onProgress(`Fitting ${data.length} runs: trying loss curvature (${round + 1} of 3)…`);
+        await yieldUI();
+        v5 = this.nelder((v) => { const q = withQ(v, 3); return badShared(q) || v[4] <= -0.9 || v[4] > 4 ? 1e12 : total(q); },
+          v5, [0.5, 5, 0.1, 0.2, 0.3], 250).x;
+        const pq3 = withQ(v5, 3);
+        for (const x of data) {
+          const span = Math.max(5, pq3.tinf - x.r.T0 - 1);
+          const b = this.nelder((v) => (Math.abs(v[1]) > 1.5 || v[0] < -span || v[0] > span ? 1e12 : sse(pq3, x, v[0], v[1])), [x.d, x.sh], [3, 0.5], 80);
+          x.d = b.x[0]; x.sh = b.x[1];
+        }
+      }
+      const pq = withQ(v5), eq = total(pq);
+      delete pq.sub;
+      if (eq <= err * 0.85 * 0.85 && Math.abs(v5[4]) >= 0.01) { p = pq; err = eq; }
+      else data.forEach((x, i) => { [x.d, x.sh] = keep[i]; });
+    }
+    // κ: the start offsets against how warm each run started (through 0: a run from room temperature starts at rest)
+    let sxx = 0, sxy = 0, warm = 0;
+    for (const x of data) { const w = x.r.T0 - tamb; if (w >= 5) warm++; sxx += w * w; sxy += w * x.d; }
+    const kappa = warm && sxx > 0 ? sxy / sxx : 0;
+    const out = { ...p, rms: Math.sqrt(err), n: data.length, tamb: Math.round(tamb * 10) / 10 };
+    if (Math.abs(kappa) >= 0.01) out.kappa = Math.round(kappa * 1000) / 1000;
+    out.perRun = data.map((x) => {
+      const q = { ...p, lag: p.lag + x.sh };
+      // to 1° short of the target, the way a real run counts as having reached it
+      const c = this.curve(q, x.r.T0, Infinity, Math.max(x.T.length, 3600), x.r.T0 + x.d), reach = c.T.findIndex((v) => v >= x.r.target - 1);
+      return { id: x.r.id, T0: x.r.T0, target: x.r.target, d: x.d, sh: x.sh, rms: Math.sqrt(sse(p, x)), reach: reach >= 0 ? reach : null, real: x.r.tReach };
+    });
+    return out;
+  },
   /** How much of a run the fits use: up to the target, and only while the heater ran at full power. */
   fitLen(r, len) {
     let n = Math.min(len, (r.tReach !== null && r.tReach !== undefined ? r.tReach : len - 1) + 1);
@@ -636,7 +741,11 @@ const HeatSync = {
   },
   saveCustom(heater, p) {
     const all = { ...(Settings.get(this.CUSTOM) || {}) };
-    if (p) { all[heater] = { lag: p.lag, tinf: p.tinf, tau: p.tau, taus: p.taus }; if (p.q) all[heater].q = p.q; } else delete all[heater];
+    if (p) {
+      all[heater] = { lag: p.lag, tinf: p.tinf, tau: p.tau, taus: p.taus };
+      if (p.q) all[heater].q = p.q;
+      if (p.kappa) { all[heater].kappa = p.kappa; all[heater].tamb = p.tamb !== undefined ? p.tamb : 25; }
+    } else delete all[heater];
     Settings.set(this.CUSTOM, all);
   },
 };
@@ -1020,6 +1129,7 @@ Panels.heat_sync = class extends Panel {
   setVar(key, val) {
     const r = this.mRun, p = this.mp, A = () => p.tinf - r.T0;
     if (!isFinite(val)) return;
+    this.mMulti = null; // the joint fit's per-run numbers no longer apply once a constant is edited
     // velocity and acceleration set τ and τs; with loss curvature that's not a closed form, so correct a few times
     const toVA = (v, a) => {
       let tv = v, ta = a, adjusted = false;
@@ -1047,7 +1157,10 @@ Panels.heat_sync = class extends Panel {
       return;
     } else if (key === "tau") p.tau = Math.max(p.taus * 1.05, val);
     else if (key === "taus") p.taus = Math.min(p.tau * 0.95, Math.max(0.2, val));
-    else if (key === "curv") {
+    else if (key === "kappa") {
+      const k = Math.max(-100, Math.min(300, val)) / 100;
+      if (Math.abs(k) < 0.005) delete p.kappa; else { p.kappa = k; if (p.tamb === undefined) p.tamb = 25; }
+    } else if (key === "curv") {
       // shown as the extra full-power rate at this run's start, in %
       const c = Math.max(-85, Math.min(300, val)) / 100;
       if (Math.abs(c) < 0.005) delete p.q; else p.q = c / (p.tau * Math.max(1, A()));
@@ -1055,20 +1168,81 @@ Panels.heat_sync = class extends Panel {
     this.mNote = "Edited";
     this.renderModel();
   }
-    renderModel() {
+  /** Fit all runs: pick this heater's runs (all ticked), then one model for all of them (HeatSync.fitMany). */
+  fitAllDialog(btn) {
+    const heater = this.mRun.heater, runs = HeatSync.load().filter((r) => r.heater === heater && r.target - r.T0 >= 10).reverse();
+    if (runs.length < 2) { this.app.popup("Needs at least two heat-ups of this heater", 2); return; }
+    const pick = new Set(runs.map((r) => r.id));
+    const dateOf = (r) => { const w = r.wall ? new Date(r.wall * 1000) : null; return w ? `${w.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${w.toTimeString().slice(0, 5)}` : "no date"; };
+    const list = el("div", { class: "hs-loglist" });
+    const draw = () => {
+      list.innerHTML = "";
+      for (const r of runs) list.append(Button(null, `${pick.has(r.id) ? "☑" : "☐"} ${r.T0.toFixed(0)}° → ${r.target}°  (+${(r.target - r.T0).toFixed(0)}°)${r.test ? " · Test" : ""}  ·  ${dateOf(r)}`,
+        pick.has(r.id) ? "selected" : null, { lines: 1, onclick: () => { if (pick.has(r.id)) pick.delete(r.id); else pick.add(r.id); draw(); } }));
+    };
+    draw();
+    const name = heater === "heater_bed" ? "Bed" : prettify(heater);
+    const body = el("div", { class: "hs-pick" }, el("div", { class: "desc" },
+      `One set of constants for all the ticked ${name} heat-ups, fitted so the model varies as little as possible between them. Runs that started warm get their own start state, and from those a warm-start factor κ.`), list);
+    this.app.dialog(`Fit all ${name} runs`, [
+      { name: "Fit", style: "dialog-primary", cb: () => this.fitAll(runs.filter((r) => pick.has(r.id)), btn) },
+      { name: "Cancel", style: "dialog-default" }], body);
+  }
+  async fitAll(runs, btn) {
+    if (runs.length < 2) { this.app.popup("Pick at least two heat-ups", 2); return; }
+    if (btn) btn.busy(true);
+    try {
+      const res = await HeatSync.fitMany(runs, (t) => { this.mNote = t; const d = this.mView && this.mView.querySelector(".hs-model .hs-card .desc"); if (d) d.textContent = t; });
+      if (!res) { this.mNote = "Not enough usable heat-ups (each needs 15 s at full power and a 10° rise)"; this.renderModel(); return; }
+      const p = { lag: res.lag, tinf: res.tinf, tau: res.tau, taus: res.taus };
+      if (res.q) p.q = res.q;
+      if (res.kappa) { p.kappa = res.kappa; p.tamb = res.tamb; }
+      this.mp = p;
+      this.mMulti = { p, res };
+      this.mNote = `Fitted to ${res.n} runs at once: ${res.rms.toFixed(2)} °C RMS overall${res.q ? ", with loss curvature" : ""}`;
+      this.renderModel();
+    } finally { if (btn) btn.busy(false); }
+  }
+  /** The last joint fit, run by run (while its constants are the ones shown). Tap a run to draw the model over it. */
+  multiCard(p) {
+    const m = this.mMulti;
+    if (!m || m.p !== p) return null;
+    const res = m.res, all = HeatSync.load();
+    const f = (v, d, u = "") => (typeof v === "number" && isFinite(v) ? `${v.toFixed(d)}${u}` : "–");
+    const rows = res.perRun.slice().sort((a, b) => a.T0 - b.T0 || a.target - b.target).map((x) => {
+      const r = all.find((y) => y.id === x.id), cur = this.mRun && this.mRun.id === x.id;
+      return el("tr", { class: cur ? "sel" : "", onclick: () => { if (r) { this.mRun = r; this.renderModel(); } } },
+        el("td", { class: "k" }, `${x.T0.toFixed(0)}° → ${x.target}°`), el("td", {}, `${x.d >= 0 ? "+" : "−"}${Math.abs(x.d).toFixed(1)}°`),
+        el("td", {}, f(x.rms, 2, "°")), el("td", {}, x.reach !== null ? fmtSecs(x.reach) : "never"), el("td", {}, x.real !== null && x.real !== undefined ? fmtSecs(x.real) : "–"));
+    });
+    const rmsAll = res.perRun.map((x) => x.rms);
+    return el("div", { class: "hs-card" },
+      el("div", { class: "title" }, `One model, ${res.n} runs`),
+      el("div", { class: "hs-kv" },
+        el("span", {}, "Fit error"), el("b", {}, `${f(res.rms, 2, " °C")} overall · ${f(Math.min(...rmsAll), 2)}–${f(Math.max(...rmsAll), 2, " °C")} per run`),
+        el("span", {}, "Warm start κ"), el("b", {}, res.kappa ? `${f(res.kappa * 100, 0, " %")}: heater ahead by κ·(start − ${f(res.tamb, 0, "°")})` : "none found")),
+      el("div", { class: "hs-const-wrap" }, el("table", { class: "hs-const hs-multi" },
+        el("tr", {}, el("th", {}, "Run"), el("th", {}, "Ahead"), el("th", {}, "Error"), el("th", {}, "Model"), el("th", {}, "Real")),
+        ...rows)),
+      el("div", { class: "desc" }, "Ahead: how far the heater was ahead of the sensor at the start (0 from cold). Model / Real: time to target. Tap a run to draw it."));
+  }
+  renderModel() {
     const r = this.mRun, p = this.mp, V = this.mView;
     const A = p.tinf - r.T0, va = HeatSync.toVA(p, A);
     const real = HeatSync.realCurve(r);
-    const ov = HeatSync.curve(p, r.T0, r.target, real.length);
-    const reach = ov.T.findIndex((v) => v >= r.target);
-    const rms = HeatSync.rms(p, r);
+    // the run's own start (heater ahead of the sensor, time shift) from the last joint fit, while its constants are shown
+    const own = this.mMulti && this.mMulti.p === p ? this.mMulti.res.perRun.find((x) => x.id === r.id) : null;
+    const pr = own ? { ...p, lag: p.lag + own.sh } : p, h0 = own ? r.T0 + own.d : undefined;
+    const ov = HeatSync.curve(pr, r.T0, r.target, real.length, h0);
+    const reach = ov.T.findIndex((v) => v >= r.target - 1);
+    const rms = (() => { const n = HeatSync.fitLen(r, real.length), c = HeatSync.curve(pr, r.T0, Infinity, n, h0); let e = 0; for (let i = 0; i < n; i++) e += (c.T[i] - real[i]) ** 2; return Math.sqrt(e / n); })();
     // the run the heater's current model (saved, else measured) predicts, to compare the edited constants with
     const pred = this.predOn() ? this.predFor(r, real.length) : null;
     const name = r.heater === "heater_bed" ? "Bed" : prettify(r.heater);
     // one editable variable: value (tap to type) and − / + steps
     const row = (label, key, value, unit, digits, step, mult) => {
       const val = Button(null, `${value.toFixed(digits)} ${unit}`, "hs-val", { lines: 1, onclick: () => Input.number({
-        title: label, value: Number(value.toFixed(digits)), unit, min: key === "curv" ? -85 : key === "lag" ? -2 : 0, ok: "Set", keepOpen: true,
+        title: label, value: Number(value.toFixed(digits)), unit, min: key === "curv" ? -85 : key === "kappa" ? -100 : key === "lag" ? -2 : 0, ok: "Set", keepOpen: true,
         desc: key === "v" || key === "a" || key === "curv" ? `For this run's start, ${r.T0.toFixed(0)}°` : null,
         onSubmit: (x) => this.setVar(key, x) }) });
       const nudge = (dir) => this.setVar(key, mult ? value * (dir > 0 ? 1 + step : 1 / (1 + step)) : Math.round((value + dir * step) * 1000) / 1000);
@@ -1080,6 +1254,7 @@ Panels.heat_sync = class extends Panel {
     V.append(
       el("div", { class: "hs-top" },
         Button(null, `Model · ${name} ${r.T0.toFixed(0)}° → ${r.target}°${r.test ? " · Test" : ""}  ▾`, "hs-mtitle hs-runpick", { lines: 1, onclick: () => this.pickModelRun() }),
+        Button("refresh", "Fit all runs", "color4", { side: true, lines: 1, onclick: (e, b) => this.fitAllDialog(b) }),
         Button("refresh", "Fit to run", "color1", { side: true, lines: 1, onclick: () => { const f = HeatSync.fit(r); if (f) { this.mp = f; this.mNote = f.q ? "Fitted to this run (with loss curvature: it fit clearly better)" : "Fitted to this run"; this.renderModel(); } } }),
         Button("complete", "Save as model", "color3", { side: true, lines: 1, onclick: () => { HeatSync.saveCustom(r.heater, p); this.mNote = `Saved: ${name} predictions now use this model`; this.renderModel(); } }),
         (Settings.get(HeatSync.CUSTOM) || {})[r.heater]
@@ -1093,6 +1268,7 @@ Panels.heat_sync = class extends Panel {
           row("Time constant τ", "tau", p.tau, "s", 0, 0.05, true),
           row("Sensor lag τs", "taus", p.taus, "s", 1, 0.1, true),
           row("Loss curvature · extra start rate", "curv", HeatSync.curvOf(p, A) * 100, "%", 0, 5, false),
+          row(`Warm start κ · heater ahead, of start − ${(p.tamb !== undefined ? p.tamb : 25).toFixed(0)}°`, "kappa", (p.kappa || 0) * 100, "%", 0, 5, false),
           el("div", { class: "hs-card" }, el("div", { class: "hs-kv" },
             el("span", {}, "Fit error"), el("b", {}, `${rms.toFixed(2)} °C RMS`),
             el("span", {}, "Model to target"), el("b", {}, reach >= 0 ? fmtSecs(reach) : "never"),
@@ -1102,7 +1278,8 @@ Panels.heat_sync = class extends Panel {
               el("span", {}, "Predicted from"), el("b", {}, pred.source),
               el("span", {}, "Predicted fit error"), el("b", {}, `${HeatSync.rms(HeatSync.model(r.heater), r).toFixed(2)} °C RMS`)]
               : [el("span", {}, "Predicted"), el("b", {}, "no model for this heater yet")]) : [])),
-            el("div", { class: "desc", style: { marginTop: ".3em" } }, this.mNote || ""))),
+            el("div", { class: "desc", style: { marginTop: ".3em" } }, this.mNote || "")),
+          this.multiCard(p)),
         el("div", { class: "hs-right" },
           el("div", { class: "hs-legend" }, el("span", {}, el("i", { style: { background: "currentColor" } }), "Real"),
             el("span", {}, el("i", { style: { background: "#35d0e0" } }), "Model"),
