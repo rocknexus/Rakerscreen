@@ -359,9 +359,17 @@ function notesApi(req, res) {
   res.writeHead(405); res.end();
 }
 
+// ---- live reload: any change under web/ (or the overlay) bumps the version; open pages reload themselves
+let webVersion = Date.now();
+let bumpTimer = null;
+const bump = () => { clearTimeout(bumpTimer); bumpTimer = setTimeout(() => { webVersion = Date.now(); console.log("[reload] web files changed"); }, 300); };
+try { fs.watch(WEB, { recursive: true }, bump); } catch (e) { console.log("live reload off: " + e.message); }
+try { fs.watch(path.join(__dirname, "annotate.js"), bump); } catch (e) { /* ignore */ }
+
 const server = http.createServer((req, res) => {
   const url = decodeURIComponent(req.url.split("?")[0]);
   if (url === "/__notes") { notesApi(req, res); return; }
+  if (url === "/__version") { res.writeHead(200, { "Content-Type": "text/plain", "Cache-Control": "no-store" }); res.end(String(webVersion)); return; }
   if (url === "/__annotate.js") {
     fs.readFile(path.join(__dirname, "annotate.js"), (err, data) => { res.writeHead(err ? 404 : 200, { "Content-Type": "text/javascript", "Cache-Control": "no-store" }); res.end(data || ""); });
     return;

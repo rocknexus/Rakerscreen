@@ -201,4 +201,32 @@
   addEventListener("resize", render);
   setInterval(load, 3000);
   load();
+
+  // live reload: when Claude changes the app the page reloads itself, back on the same panel.
+  // Waits while a note is being typed so nothing is lost.
+  let version = null, pendingReload = false;
+  try {
+    const back = JSON.parse(sessionStorage.getItem("ann-return") || "null");
+    sessionStorage.removeItem("ann-return");
+    if (back && back.panel) {
+      const go = () => { try { if (back.panel !== "main_menu" && Panels[back.panel] && screenApp.current() && screenApp.current().name !== back.panel) screenApp.showPanel(back.panel); } catch (e) { /* ignore */ } };
+      const wait = setInterval(() => { try { if (screenApp.initialized || (screenApp.current() && screenApp.current().name === "main_menu")) { clearInterval(wait); setTimeout(go, 300); } } catch (e) { /* not ready */ } }, 300);
+      setTimeout(() => clearInterval(wait), 15000);
+    }
+  } catch (e) { /* no session storage */ }
+  const typing = () => { const ta = box && box.querySelector("textarea"); return !!(ta && ta.value.trim()); };
+  const reloadNow = () => {
+    try { sessionStorage.setItem("ann-return", JSON.stringify({ panel: panelName() })); } catch (e) { /* ignore */ }
+    location.reload();
+  };
+  async function checkVersion() {
+    try {
+      const v = await (await fetch("/__version", { cache: "no-store" })).text();
+      if (version === null) version = v;
+      else if (v !== version) pendingReload = true;
+    } catch (e) { /* server restarting */ }
+    if (pendingReload && !typing() && !pointing) reloadNow();
+  }
+  setInterval(checkVersion, 1500);
+  checkVersion();
 })();
