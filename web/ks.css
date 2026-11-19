@@ -502,6 +502,14 @@ body.kb-open .dialog-body .desc { font-size: .85em; }
 .hs-loglist .btn { justify-content: flex-start; padding: .55em .7em; min-height: 2.4em; font-size: .9em; }
 .hs-loglist .btn.selected { background: var(--active); }
 .hs-loglist .btn .lbl { width: 100%; text-align: left; }
+.hs-pick { display: flex; flex-direction: column; gap: .4em; width: min(92vw, 44em); }
+.hs-pick .togglerow { display: flex; gap: .2em; }
+.hs-pick .togglerow .btn { flex: 1 1 0; padding: .45em .3em; }
+.hs-pick-sort { display: flex; align-items: center; gap: .5em; }
+.hs-pick-sort > .togglerow { flex: 1 1 auto; }
+.hs-pick .hs-loglist { max-height: max(6em, calc(100vh - 19em)); overflow-x: hidden; }
+.hs-pick .hs-loglist .btn .lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hs-pick .togglerow .btn { min-height: 2.2em; }
 .hs-top > .btn.hs-runpick { flex: 1 1 auto; min-width: 0; justify-content: flex-start; font-weight: bold; background: rgba(255,255,255,.06); border-radius: .4em; }
 .hs-top > .btn.hs-runpick .lbl { text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hs-legend .hs-pred-toggle { cursor: pointer; padding: .05em .45em; border: 1px solid rgba(126,224,106,.5); border-radius: .8em; opacity: .7; }

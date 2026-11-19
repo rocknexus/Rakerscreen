@@ -742,23 +742,46 @@ Panels.heat_sync = class extends Panel {
     this.mNote = "Fitted to this run";
     return HeatSync.fit(r) || { lag: r.lag || 2, tinf: r.tinf || r.target + 60, tau: r.tau || 60, taus: Math.max(1, (r.tau || 60) * 0.08) };
   }
-  /** Pick which recorded run the model is drawn over (any heater; another heater starts from its own model). */
+  /** Pick which recorded run the model is drawn over: one heater at a time (Extruder / Bed ...), sorted by date and
+      time, start temperature, target or rise; tapping the sort in use again flips it. A run of another heater starts
+      from that heater's own model. */
   pickModelRun() {
-    const runs = HeatSync.load().slice().reverse(), cur = this.mRun;
-    const label = (r) => {
-      const when = r.wall ? new Date(r.wall * 1000) : null;
-      return `${r.heater === "heater_bed" ? "Bed" : prettify(r.heater)} ${r.T0.toFixed(0)}° → ${r.target}°${r.test ? " · Test" : ""}${when ? `  ·  ${when.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${when.toTimeString().slice(0, 5)}` : ""}${r.tau ? `  ·  τ ${r.tau.toFixed(0)} s` : ""}`;
-    };
+    const all = HeatSync.load(), cur = this.mRun;
+    const heaters = [...new Set(all.map((r) => r.heater))].sort((x, y) => (x === "extruder" ? -1 : y === "extruder" ? 1 : x.localeCompare(y)));
+    const hName = (h) => (h === "heater_bed" ? "Bed" : prettify(h));
+    const saved = Settings.get("hs_run_sort") || {};
+    const st = { heater: cur && heaters.includes(cur.heater) ? cur.heater : heaters[0], sort: saved.sort || "date", desc: saved.desc !== false };
+    const SORTS = { date: ["Date/time", (r) => r.wall || 0], start: ["Start", (r) => r.T0], target: ["Target", (r) => r.target], rise: ["Rise", (r) => r.target - r.T0] };
+    const dateOf = (r) => { const w = r.wall ? new Date(r.wall * 1000) : null; return w ? `${w.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${w.toTimeString().slice(0, 5)}` : "no date"; };
+    const label = (r) => `${r.T0.toFixed(0)}° → ${r.target}°  (+${(r.target - r.T0).toFixed(0)}°)${r.test ? "  · Test" : ""}  ·  ${dateOf(r)}${r.tau ? `  ·  τ ${r.tau.toFixed(0)} s` : ""}`;
     let close;
-    const list = el("div", { class: "hs-loglist" }, ...runs.map((r) => Button(null, label(r), r === cur || r.id === (cur && cur.id) ? "selected" : null, { lines: 1, onclick: () => {
-      close();
-      const other = !cur || r.heater !== cur.heater;
-      this.mRun = r;
-      if (other) this.mp = this.startModel(r); // a different heater: its own model
-      else this.mNote = "Same model, another run";
-      this.renderModel();
-    } })));
-    close = this.app.dialog("Compare with which run?", [{ name: "Cancel", style: "dialog-default" }], list);
+    const body = el("div", { class: "hs-pick" });
+    const draw = () => {
+      body.innerHTML = "";
+      const runs = all.map((r, i) => [r, i]).filter(([r]) => r.heater === st.heater);
+      const key = SORTS[st.sort][1];
+      // ties: newest first
+      runs.sort(([x, i], [y, j]) => (st.desc ? key(y) - key(x) : key(x) - key(y)) || (y.wall || 0) - (x.wall || 0) || j - i);
+      const heaterRow = heaters.length > 1 ? ToggleRow(heaters, st.heater, (h) => { st.heater = h; draw(); }, hName, true).el : null;
+      const sortRow = ToggleRow(Object.keys(SORTS), st.sort, (k) => {
+        if (k === st.sort) st.desc = !st.desc; else { st.sort = k; st.desc = k === "date"; }
+        Settings.set("hs_run_sort", { sort: st.sort, desc: st.desc });
+        draw();
+      }, (k) => `${SORTS[k][0]}${k === st.sort ? (st.desc ? " ▼" : " ▲") : ""}`, true).el;
+      const list = el("div", { class: "hs-loglist" }, ...runs.map(([r]) => Button(null, label(r), r === cur || (cur && r.id === cur.id) ? "selected" : null, { lines: 1, onclick: () => {
+        close();
+        const other = !cur || r.heater !== cur.heater;
+        this.mRun = r;
+        if (other) this.mp = this.startModel(r); // a different heater: its own model
+        else this.mNote = "Same model, another run";
+        this.renderModel();
+      } })));
+      if (!runs.length) list.append(el("div", { class: "desc" }, `No ${hName(st.heater)} heat-ups recorded.`));
+      body.append(...[heaterRow, el("div", { class: "hs-pick-sort" }, el("span", { class: "desc" }, "Sort"), sortRow), list,
+        el("div", { class: "desc" }, `${runs.length} ${hName(st.heater)} heat-up${runs.length === 1 ? "" : "s"}`)].filter(Boolean));
+    };
+    draw();
+    close = this.app.dialog("Compare with which run?", [{ name: "Cancel", style: "dialog-default" }], body);
   }
   closeModel() {
     if (this.mView) { this.mView.remove(); this.mView = null; }
