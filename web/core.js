@@ -165,6 +165,8 @@ const Settings = {
     screen_blanking_printing: "3600",
     use_dpms: true,
     screensaver_wake_delay: "0",
+    screensaver: "blank",
+    screensaver_blackout: "0",
     confirm_estop: false,
     shutdown_action: "ask",
     reboot_action: "ask",

@@ -329,6 +329,13 @@ body:not(.show-cursor), body:not(.show-cursor) * { cursor: none !important; }
 /* ================= screensaver / lock ================= */
 #screensaver { position: fixed; inset: 0; background: #000; z-index: 100; display: none; }
 #screensaver.show { display: block; }
+#screensaver { overflow: hidden; }
+.ss-status { position: absolute; left: 0; top: 0; color: #ccc; text-align: center; padding: 1em; will-change: transform; }
+.ss-status .t { font-size: 4.5em; font-weight: 300; line-height: 1.1; color: #eee; }
+.ss-status .h { font-size: 1.15em; opacity: .8; margin-top: .2em; }
+.ss-status .f { font-size: .9em; opacity: .6; max-width: 60vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: .2em auto 0; }
+.ss-status .bar { width: 16em; height: .35em; background: rgba(255,255,255,.15); border-radius: .2em; margin: .4em auto 0; overflow: hidden; }
+.ss-status .bar i { display: block; height: 100%; background: #e8a33d; }
 #lock { position: fixed; inset: 0; z-index: 90; display: none; background: transparent; }
 #lock.show { display: block; }
 #lock .unlock { position: absolute; inset: 0; background: var(--bg); display: flex; align-items: center; justify-content: center; gap: 1em; padding: 2em; }

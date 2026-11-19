@@ -2,7 +2,7 @@
    title bar), dialogs and popups. Mirrors KlipperScreen screen.py + panels/base_panel.py. */
 "use strict";
 
-const VERSION = "0.4.0";
+const VERSION = "0.4.1";
 
 // Menus translated from KlipperScreen config/main_menu.conf, print_menu.conf, move_menu.conf.
 // Only panels that Rakerscreen implements are listed.
@@ -246,16 +246,28 @@ class ScreenApp {
     const t = this.blankingTime();
     if (t > 0 && !this.ssShowing) this.ssTimer = setTimeout(() => this.showScreensaver(), t * 1000);
   }
-  showScreensaver() {
-    if (this.ssShowing || this.blankingTime() === 0) return;
+  /** preview: show it now (Settings), whatever the timeout. */
+  showScreensaver(preview) {
+    if (this.ssShowing || (!preview && this.blankingTime() === 0)) return;
     this.ssShowing = true;
     $("#popup").classList.remove("show");
     this.ss.classList.add("show");
-    // DPMS on Android: drop this window's backlight to minimum (needs no permission)
-    if (Settings.get("use_dpms") && window.PSBridge && PSBridge.setBrightness) PSBridge.setBrightness(0);
+    // an animated saver (Rakerscreen extra) runs first; black screen and DPMS come after its time, if any
+    const ran = Screensavers.start(this.ss, this, Settings.get("screensaver") || "blank");
+    const blackout = () => {
+      Screensavers.stop();
+      // DPMS on Android: drop this window's backlight to minimum (needs no permission)
+      if (Settings.get("use_dpms") && window.PSBridge && PSBridge.setBrightness) PSBridge.setBrightness(0);
+    };
+    clearTimeout(this.ssBlackTimer);
+    const after = parseInt(Settings.get("screensaver_blackout")) || 0;
+    if (ran === "blank") blackout();
+    else if (after > 0) this.ssBlackTimer = setTimeout(blackout, after * 1000);
   }
   closeScreensaver() {
     if (!this.ssShowing || this.ssWaking) return;
+    clearTimeout(this.ssBlackTimer);
+    Screensavers.stop();
     if (window.PSBridge && PSBridge.setBrightness) PSBridge.setBrightness(-1);
     // screens take a moment to wake; swallow touches during the delay (screensaver_wake_delay)
     this.ssWaking = true;
