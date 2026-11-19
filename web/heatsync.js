@@ -653,8 +653,35 @@ Panels.heat_sync = class extends Panel {
     const buttons = [];
     const kv = [];
     if (T.state === "running") {
-      kv.push(["Elapsed", fmtSecs(elapsed)], ["Temperature", f(last.temp, 1, " °C")], ["Power", f(last.pwm * 100, 0, " %")], ["Phase", phaseNow()]);
-      if (T.reachedAt !== undefined) kv.push(["Holding", `${fmtSecs(performance.now() / 1000 - T.reachedAt)} of ${HeatSync.TEST_HOLD}s`]);
+      const now = performance.now() / 1000;
+      kv.push(["Now", ""], ["Elapsed", fmtSecs(elapsed)], ["Temperature", `${f(last.temp, 1, "")} → ${T.target} °C`], ["Power", f(last.pwm * 100, 0, " %")], ["Phase", phaseNow()]);
+      if (T.reachedAt !== undefined) kv.push(["Holding", `${fmtSecs(now - T.reachedAt)} of ${HeatSync.TEST_HOLD}s`]);
+      if (r) {
+        // the curve's slope and bend: the smoothing needs a few seconds either side, so the newest points aren't
+        // trustworthy yet; read T′ about 4 s back and T″ about 8 s back (long runs are thinned to one point per r.step s)
+        const dv = HeatSync.derive(r.T), n = dv.d1.length;
+        const at = (sec) => Math.max(0, n - 1 - Math.ceil(sec / r.step));
+        const d1now = dv.d1[at(4)] / r.step, d2now = dv.d2[at(8)] / (r.step * r.step);
+        kv.push(["T′ (4 s ago)", f(d1now, 2, " °C/s")], ["T″ (8 s ago)", f(d2now, 3, " °C/s²")]);
+        kv.push(["Measured so far", ""], ["Peak T′", r.rmax ? `${f(r.rmax, 2, " °C/s")} at ${fmtSecs(r.tInfl)}` : "–"], ["Lag", f(r.lag, 1, " s")],
+          ["Time constant τ", r.tau ? f(r.tau, 0, " s") : "after the bend"], ["T∞ full power", r.tinf ? f(r.tinf, 0, " °C") : "after the bend"]);
+        // time to target: from τ and T∞ once known, else from the current slope
+        const Tn = last.temp;
+        let eta = null;
+        if (T.reachedAt === undefined && Tn < T.target) {
+          if (r.tau && r.tinf > T.target) eta = r.tau * Math.log((r.tinf - Tn) / (r.tinf - T.target));
+          else if (d1now > 0.01) eta = (T.target - Tn) / d1now;
+        }
+        if (eta !== null && isFinite(eta)) kv.push(["To target", `about ${fmtSecs(eta)}`]);
+        // the two-lag fit to the data so far, every 5 s once there's something to fit
+        if (T.set && r.T.length >= 20 && (!T.liveFitAt || now - T.liveFitAt >= 5)) { T.liveFit = HeatSync.fit(r); T.liveFitAt = now; }
+        const p = T.liveFit;
+        if (p) {
+          const va = HeatSync.toVA(p, p.tinf - r.T0);
+          kv.push([r.tau ? "Live fit (two-lag)" : "Live fit (rough until it bends)", ""], ["τ · τs", `${f(p.tau, 0, " s")} · ${f(p.taus, 1, " s")}`], ["T∞", f(p.tinf, 0, " °C")], ["Lag L", f(p.lag, 1, " s")],
+            ["Velocity · peak T′", f(va.v, 2, " °C/s")], ["Accel · peak T″", f(va.a, 3, " °C/s²")], ["Fit error", f(p.rms, 2, " °C RMS")]);
+        }
+      }
       buttons.push(Button("cancel", "Cancel", "color2", { side: true, lines: 1, onclick: () => HeatSync.cancelTest() }));
     } else if (T.result) {
       const p = T.fit, A = p ? p.tinf - r.T0 : 0, va = p ? HeatSync.toVA(p, A) : null;
@@ -672,6 +699,8 @@ Panels.heat_sync = class extends Panel {
     const head = T.state === "running" ? `Test · ${name} → ${T.target}°`
       : T.state === "done" ? `Done · ${name} ${r ? r.T0.toFixed(0) : ""}°→${T.target}°`
       : `Test heat ${T.state === "cancelled" ? "cancelled" : "stopped"} · ${name}`;
+    // it redraws twice a second: keep where the readout was scrolled to
+    const oldLeft = V.querySelector(".hs-left"), keepScroll = oldLeft ? oldLeft.scrollTop : 0;
     V.innerHTML = "";
     V.append(
       el("div", { class: "hs-top" }, el("div", { class: "hs-mtitle" }, head), ...buttons),
@@ -682,8 +711,11 @@ Panels.heat_sync = class extends Panel {
             T.note ? el("div", { class: "desc", style: { marginTop: ".3em" } }, T.note) : null,
             T.state === "done" && T.result ? el("div", { class: "desc", style: { marginTop: ".3em" } }, "Added to the recorded heat-ups (marked Test).") : null)),
         el("div", { class: "hs-right" }, this.legend.cloneNode(true), canvas)));
+    const newLeft = V.querySelector(".hs-left");
+    if (newLeft) newLeft.scrollTop = keepScroll;
     if (r) {
-      const ov = T.fit ? HeatSync.curve(T.fit, r.T0, r.target, HeatSync.realCurve(r).length) : null;
+      const p = T.state === "running" ? T.liveFit : T.fit;
+      const ov = p ? HeatSync.curve(p, r.T0, r.target, HeatSync.realCurve(r).length) : null;
       requestAnimationFrame(() => this.draw(r, ov, canvas));
     }
   }
@@ -923,12 +955,16 @@ Panels.heat_sync = class extends Panel {
     // inflection
     g.strokeStyle = "rgba(255,255,255,.5)"; g.lineWidth = 1; g.setLineDash([2, 3]);
     g.beginPath(); g.moveTo(X(r.tInfl), gy); g.lineTo(X(r.tInfl), H - fs * 1.6); g.stroke(); g.setLineDash([]);
-    // derivatives, each scaled to fit, zero line shared
-    const span = (a) => (a ? a.slice(0, dur + 1).map(Math.abs) : []);
-    const m1 = Math.max(1e-6, ...d1.map(Math.abs), ...span(ov && ov.d1)), m2 = Math.max(1e-6, ...d2.map(Math.abs), ...span(ov && ov.d2));
+    // derivatives, each scaled to fit the real run only (so editing a model never rescales the recorded run),
+    // zero line shared; the model's curves are clipped to the band
+    const m1 = Math.max(1e-6, ...d1.map(Math.abs)), m2 = Math.max(1e-6, ...d2.map(Math.abs));
     const Z = by + bh / 2;
     g.strokeStyle = "rgba(127,127,127,.5)"; g.beginPath(); g.moveTo(gx, Z); g.lineTo(gx + gw, Z); g.stroke();
-    const plot = (d, mx, col) => { g.strokeStyle = col; g.lineWidth = 1.6; g.beginPath(); d.forEach((v, i) => { const x = X(i), y = Z - (v / mx) * (bh / 2) * 0.95; i ? g.lineTo(x, y) : g.moveTo(x, y); }); g.stroke(); };
+    const plot = (d, mx, col) => {
+      g.strokeStyle = col; g.lineWidth = 1.6; g.beginPath();
+      d.forEach((v, i) => { const x = X(i), y = Math.max(by, Math.min(by + bh, Z - (v / mx) * (bh / 2) * 0.95)); i ? g.lineTo(x, y) : g.moveTo(x, y); });
+      g.stroke();
+    };
     plot(d2, m2, "#b77cf0"); plot(d1, m1, "#f0a028");
     if (ov) {
       g.setLineDash([5, 4]);
