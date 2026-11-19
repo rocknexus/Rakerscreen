@@ -502,13 +502,23 @@ body.kb-open .dialog-body .desc { font-size: .85em; }
 .hs-loglist .btn { justify-content: flex-start; padding: .55em .7em; min-height: 2.4em; font-size: .9em; }
 .hs-loglist .btn.selected { background: var(--active); }
 .hs-loglist .btn .lbl { width: 100%; text-align: left; }
+.hs-top > .btn.hs-runpick { flex: 1 1 auto; min-width: 0; justify-content: flex-start; font-weight: bold; background: rgba(255,255,255,.06); border-radius: .4em; }
+.hs-top > .btn.hs-runpick .lbl { text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hs-legend .hs-pred-toggle { cursor: pointer; padding: .05em .45em; border: 1px solid rgba(126,224,106,.5); border-radius: .8em; opacity: .7; }
 .hs-legend .hs-pred-toggle.on { opacity: 1; background: rgba(126,224,106,.18); }
 .hs-kv .hs-kv-head { opacity: 1; font-weight: bold; margin-top: .3em; grid-column: 1 / -1; }
 .hs-kv .hs-kv-head + b { display: none; }
-.hs-test .hs-body { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.hs-test .hs-body { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); }
+.hs-const-wrap { overflow-x: auto; }
+.hs-const-wrap .desc { font-size: .8em; margin-top: .25em; }
 .hs-test .hs-kv b { white-space: nowrap; }
 .hs-test .hs-card { font-size: .8em; }
+.hs-const { width: 100%; border-collapse: collapse; margin-top: .5em; font-size: .85em; }
+.hs-const th { text-align: right; font-weight: bold; padding: .15em .3em; border-bottom: 1px solid rgba(255,255,255,.2); white-space: nowrap; }
+.hs-const th:first-child, .hs-const td.k { text-align: left; opacity: .8; }
+.hs-const td { text-align: right; padding: .12em .3em; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.hs-const td.wide { text-align: left; white-space: normal; opacity: .9; }
+.hs-const tr:nth-child(even) td { background: rgba(255,255,255,.035); }
 .hs-cfg { max-width: 80vw; box-sizing: border-box; max-height: 40vh; overflow: auto; font-size: .62em; background: rgba(0,0,0,.3); padding: .5em; border-radius: .4em; white-space: pre; text-align: left; margin-top: .5em; }
 .hs-run { padding: .4em .6em; border-radius: .4em; cursor: pointer; border-left: .3em solid transparent; font-size: .85em; }
 .hs-run.sel { background: var(--active); border-left-color: var(--color1, #e8a33d); }
