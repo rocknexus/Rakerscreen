@@ -361,6 +361,9 @@ function notesApi(req, res) {
 
 // ---- fake klippy.log / moonraker.log for the Logs panel
 const STARTED = Date.now();
+const configFiles = {
+  "printer.cfg": "# mock printer.cfg\n[printer]\nkinematics: cartesian\nmax_velocity: 300\nmax_accel: 3000\n\n[extruder]\nheater_pin: PA1\n\n[heater_bed]\nheater_pin: PA2\n\n#*# <---------------------- SAVE_CONFIG ---------------------->\n#*# [bed_mesh default]\n",
+};
 function fakeLog(kind) {
   const lines = [];
   const at = (s) => new Date(STARTED + s * 1000);
@@ -423,6 +426,39 @@ const server = http.createServer((req, res) => {
       res.writeHead(206, { ...cors, "Content-Range": `bytes ${start}-${buf.length - 1}/${buf.length}` });
       res.end(buf.subarray(start));
     } else { res.writeHead(200, cors); res.end(buf); }
+    return;
+  }
+  // config folder (in memory): read a file, upload one (multipart, root=config)
+  const cfgCors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "X-Api-Key", "Access-Control-Allow-Methods": "GET, POST, OPTIONS" };
+  const cfgFile = url.match(/^\/server\/files\/config\/([A-Za-z0-9_.-]+\.cfg)$/);
+  if (cfgFile || url === "/server/files/upload") {
+    if (req.method === "OPTIONS") { res.writeHead(204, cfgCors); res.end(); return; }
+    if (cfgFile) {
+      const text = configFiles[cfgFile[1]];
+      res.writeHead(text === undefined ? 404 : 200, { ...cfgCors, "Content-Type": "text/plain; charset=utf-8" });
+      res.end(text === undefined ? "not found" : text);
+      return;
+    }
+    const chunks = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => {
+      const raw = Buffer.concat(chunks).toString("utf8");
+      const boundary = ((req.headers["content-type"] || "").match(/boundary=(.+)$/) || [])[1];
+      const parts = boundary ? raw.split("--" + boundary).slice(1, -1) : [];
+      let root = "gcodes", name = null, body = null;
+      for (const p of parts) {
+        const [head, ...rest] = p.replace(/^\r\n/, "").split("\r\n\r\n");
+        const value = rest.join("\r\n\r\n").replace(/\r\n$/, "");
+        const field = (head.match(/name="([^"]+)"/) || [])[1];
+        if (field === "root") root = value.trim();
+        if (field === "file") { name = (head.match(/filename="([^"]+)"/) || [])[1]; body = value; }
+      }
+      if (root !== "config" || !name || body === null) { res.writeHead(400, cfgCors); res.end("bad upload"); return; }
+      configFiles[name] = body;
+      console.log(`[config] wrote ${name} (${body.length} bytes)`);
+      res.writeHead(201, { ...cfgCors, "Content-Type": "application/json" });
+      res.end(JSON.stringify({ item: { path: name, root: "config", size: body.length }, action: "create_file" }));
+    });
     return;
   }
   if (url === "/__version") { res.writeHead(200, { "Content-Type": "text/plain", "Cache-Control": "no-store" }); res.end(String(webVersion)); return; }

@@ -1822,6 +1822,37 @@ function fetchMoonrakerLog(app, name, bytes = LOG_TAIL_BYTES) {
     return r.text();
   });
 }
+const cfgWaiters = {};
+window.__pscfg = (id, code, text) => { const w = cfgWaiters[id]; if (w) { delete cfgWaiters[id]; w(code, text); } };
+/** Read (text undefined) or write a file in Moonraker's config folder, next to printer.cfg.
+    Resolves with the file text (read) or Moonraker's answer (write); a missing file reads as null. */
+function moonrakerConfigFile(app, name, text) {
+  const key = Settings.get("moonraker_api_key") || "";
+  const upload = typeof text === "string";
+  const done = (code, body) => {
+    if (code === 200 || code === 201) return body;
+    if (!upload && code === 404) return null;
+    throw new Error(code ? `Moonraker answered HTTP ${code}` : body || "Request failed");
+  };
+  if (window.PSBridge && PSBridge.configFile) {
+    return new Promise((resolve, reject) => {
+      const id = ++logReqId;
+      const timer = setTimeout(() => { delete cfgWaiters[id]; reject(new Error("Timed out")); }, 20000);
+      cfgWaiters[id] = (code, body) => { clearTimeout(timer); try { resolve(done(code, body)); } catch (e) { reject(e); } };
+      const host = String(Settings.get("moonraker_host") || "").trim().replace(/^\w+:\/\//, "").replace(/[/:].*$/, "");
+      PSBridge.configFile(id, host, parseInt(app.mr.port(), 10) || 7125, name, key, upload ? text : null);
+    });
+  }
+  const headers = key ? { "X-Api-Key": key } : {};
+  let req;
+  if (upload) {
+    const form = new FormData();
+    form.append("root", "config");
+    form.append("file", new Blob([text], { type: "text/plain" }), name);
+    req = fetch(`${app.mr.httpBase()}/server/files/upload`, { method: "POST", headers, body: form });
+  } else req = fetch(`${app.mr.httpBase()}/server/files/config/${name}`, { headers, cache: "no-store" });
+  return req.then(async (r) => done(r.status, await r.text()));
+}
 Panels.logs = class extends Panel {
   constructor(app, title) {
     super(app, title || "Logs");

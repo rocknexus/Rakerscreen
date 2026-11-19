@@ -145,6 +145,7 @@ public class MainActivity extends Activity {
     static final Pattern REPO = Pattern.compile("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$");
     static final Pattern HOST = Pattern.compile("^[A-Za-z0-9.-]{1,253}$|^\\[[0-9A-Fa-f:]+\\]$");
     static final Pattern LOGNAME = Pattern.compile("^[A-Za-z0-9_.-]{1,64}\\.log(\\.[0-9]+)?$");
+    static final Pattern CFGNAME = Pattern.compile("^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,63}\\.cfg$");
     private BroadcastReceiver installReceiver;
 
     interface Progress { void at(long done); }
@@ -354,6 +355,56 @@ public class MainActivity extends Activity {
                     js("window.__pslog && __pslog(" + id + "," + code + "," + JSONObject.quote(new String(out, "UTF-8")) + ")");
                 } catch (Exception e) {
                     js("window.__pslog && __pslog(" + id + ",0," + JSONObject.quote(describe(e)) + ")");
+                } finally { if (c != null) c.disconnect(); }
+            }).start();
+        }
+
+        /** Read (upload == null) or write a file in Moonraker's config folder (next to printer.cfg),
+         *  to window.__pscfg(id, httpCode, text). Only plain *.cfg names, at most 1 MB. */
+        @JavascriptInterface
+        public void configFile(final int id, final String host, final int port, final String name, final String apiKey, final String upload) {
+            String bad = host == null || !HOST.matcher(host).matches() ? "host \"" + host + "\""
+                    : port < 1 || port > 65535 ? "port " + port
+                    : name == null || !CFGNAME.matcher(name).matches() ? "file name \"" + name + "\""
+                    : upload != null && upload.length() > 1024 * 1024 ? "file too big" : null;
+            if (bad != null) {
+                js("window.__pscfg && __pscfg(" + id + ",0," + JSONObject.quote("Invalid config request: " + bad) + ")");
+                return;
+            }
+            new Thread(() -> {
+                HttpURLConnection c = null;
+                try {
+                    String base = "http://" + host + ":" + port;
+                    c = (HttpURLConnection) new URL(upload == null ? base + "/server/files/config/" + name : base + "/server/files/upload").openConnection();
+                    if (apiKey != null && !apiKey.isEmpty()) c.setRequestProperty("X-Api-Key", apiKey);
+                    c.setConnectTimeout(8000);
+                    c.setReadTimeout(15000);
+                    if (upload != null) {
+                        String boundary = "----Rakerscreen" + System.nanoTime();
+                        String crlf = "\r\n";
+                        String head = "--" + boundary + crlf
+                                + "Content-Disposition: form-data; name=\"root\"" + crlf + crlf + "config" + crlf
+                                + "--" + boundary + crlf
+                                + "Content-Disposition: form-data; name=\"file\"; filename=\"" + name + "\"" + crlf
+                                + "Content-Type: text/plain" + crlf + crlf;
+                        byte[] body = (head + upload + crlf + "--" + boundary + "--" + crlf).getBytes("UTF-8");
+                        c.setDoOutput(true);
+                        c.setRequestMethod("POST");
+                        c.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
+                        c.setFixedLengthStreamingMode(body.length);
+                        try (OutputStream out = c.getOutputStream()) { out.write(body); }
+                    }
+                    int code = c.getResponseCode();
+                    InputStream in = code >= 400 ? c.getErrorStream() : c.getInputStream();
+                    ByteArrayOutputStream buf = new ByteArrayOutputStream();
+                    if (in != null) try (InputStream s = in) {
+                        byte[] b = new byte[16384];
+                        int n;
+                        while ((n = s.read(b)) > 0 && buf.size() < 2 * 1024 * 1024) buf.write(b, 0, n);
+                    }
+                    js("window.__pscfg && __pscfg(" + id + "," + code + "," + JSONObject.quote(buf.toString("UTF-8")) + ")");
+                } catch (Exception e) {
+                    js("window.__pscfg && __pscfg(" + id + ",0," + JSONObject.quote(describe(e)) + ")");
                 } finally { if (c != null) c.disconnect(); }
             }).start();
         }

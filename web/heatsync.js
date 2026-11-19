@@ -163,17 +163,99 @@ const HeatSync = {
     const by = {};
     for (const r of all) (by[r.heater] = by[r.heater] || []).push(r);
     all = Object.values(by).flatMap((list) => list.slice(-this.MAX_PER_HEATER));
+    // what the new heat-ups changed in each heater's measured model, kept until the next read that adds some
+    if (fresh.length) {
+      const changes = {};
+      for (const h of new Set(fresh.map((r) => r.heater))) {
+        const before = this.measured(h, have), after = this.measured(h, all);
+        changes[h] = { before, after, added: fresh.filter((r) => r.heater === h).length, at: Date.now() };
+      }
+      Settings.set(this.CHANGES, changes);
+    }
     this.save(all);
     return { found: runs.length, added: fresh.length };
   },
-  /** The heater's model: a saved one (Model page) if there is one, else medians over its recorded runs. */
-  model(heater) {
-    const custom = (Settings.get(this.CUSTOM) || {})[heater];
-    if (custom) return { ...custom, n: 0, custom: true, rmax: this.toVA(custom, custom.tinf - 23).v };
-    const runs = this.load().filter((r) => r.heater === heater && r.tau > 0 && r.tinf);
+  CHANGES: "heat_sync_changes",
+  changes(heater) { return (Settings.get(this.CHANGES) || {})[heater] || null; },
+  /** Medians over a heater's recorded runs (the measured model), or null without a time constant yet. */
+  measured(heater, list = this.load()) {
+    const runs = list.filter((r) => r.heater === heater && r.tau > 0 && r.tinf);
     if (!runs.length) return null;
     const med = (k) => this.median(runs.map((r) => r[k]).filter((v) => typeof v === "number"));
     return { n: runs.length, tau: med("tau"), lag: med("lag") || 0, tinf: med("tinf"), rmax: med("rmax") };
+  },
+  /** The heater's model: a saved one (Model page) if there is one, else the measured one. */
+  model(heater) {
+    const custom = (Settings.get(this.CUSTOM) || {})[heater];
+    if (custom) return { ...custom, n: 0, custom: true, rmax: this.toVA(custom, custom.tinf - 23).v };
+    return this.measured(heater);
+  },
+
+  /** heat_sync.cfg for Klipper: the models as macro variables and HEAT_SYNC BED= EXTRUDER= [WAIT=1], which starts
+      the slower heater first and the other after the difference, so both reach their targets together.
+      Time to target in the macro is the two-lag curve's long-run form, L + τ·ln(τ·(T∞−T0) / ((τ−τs)·(T∞−T))),
+      which is within a second or two of the app's prediction once the sensor lag has passed. */
+  cfg() {
+    const mb = this.model("heater_bed"), me = this.model("extruder");
+    if (!mb || !me) return null;
+    const n = (v, d) => (typeof v === "number" && isFinite(v) ? v.toFixed(d) : "0");
+    const src = (m) => (m.custom ? "saved model (Model page)" : `measured, median of ${m.n} heat-up${m.n === 1 ? "" : "s"}`);
+    const vars = (p, m) => [`variable_${p}_lag: ${n(m.lag, 1)}`, `variable_${p}_tau: ${n(m.tau, 1)}`, `variable_${p}_taus: ${n(m.taus || 0, 2)}`, `variable_${p}_tinf: ${n(m.tinf, 1)}`];
+    return [
+      "# heat_sync.cfg, written by Rakerscreen (Settings → Heat Sync → Export) on " + (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${d.toTimeString().slice(0, 5)}`; })(),
+      "# Export rewrites this file: change the model in the app, not here.",
+      "# Load it from printer.cfg with  [include heat_sync.cfg]",
+      `#   bed:      ${src(mb)}`,
+      `#   extruder: ${src(me)}`,
+      "#",
+      "# HEAT_SYNC BED=60 EXTRUDER=210 [WAIT=1]",
+      "#   Starts the heater that needs longer first, then the other, so both arrive together.",
+      "#   WAIT=1 (default) also waits for both (M190, M109); WAIT=0 returns once both are on.",
+      "#   It dwells (G4) between the two, so nothing else runs meanwhile: use it in a start macro.",
+      "",
+      "[gcode_macro HEAT_SYNC]",
+      "description: Heat bed and extruder so both reach temperature at the same time",
+      ...vars("bed", mb),
+      ...vars("extruder", me),
+      "gcode:",
+      "  {% macro ln(x) -%}",
+      "    {%- set ns = namespace(x=x, k=0, s=0.0) -%}",
+      "    {%- for i in range(40) -%}{%- if ns.x > 1.5 -%}{%- set ns.x = ns.x / 2.718281828459045 -%}{%- set ns.k = ns.k + 1 -%}{%- endif -%}{%- endfor -%}",
+      "    {%- set y = (ns.x - 1) / (ns.x + 1) -%}",
+      "    {%- for i in range(12) -%}{%- set ns.s = ns.s + y ** (2 * i + 1) / (2 * i + 1) -%}{%- endfor -%}",
+      "    { ns.k + 2 * ns.s }",
+      "  {%- endmacro %}",
+      "  {% macro secs(l, tau, taus, tinf, t0, t) -%}",
+      "    {%- if t <= t0 -%}0{%- elif t >= tinf - 0.5 -%}-1",
+      "    {%- else -%}{ [0, l + tau * (ln(tau * (tinf - t0) / ((tau - taus) * (tinf - t)))|float)]|max }{%- endif -%}",
+      "  {%- endmacro %}",
+      "  {% set v = printer[\"gcode_macro HEAT_SYNC\"] %}",
+      "  {% set bed = params.BED|default(0)|float %}",
+      "  {% set ext = params.EXTRUDER|default(0)|float %}",
+      "  {% set wait = params.WAIT|default(1)|int %}",
+      "  {% set tb = secs(v.bed_lag, v.bed_tau, v.bed_taus, v.bed_tinf, printer.heater_bed.temperature, bed)|float %}",
+      "  {% set te = secs(v.extruder_lag, v.extruder_tau, v.extruder_taus, v.extruder_tinf, printer.extruder.temperature, ext)|float %}",
+      "  {% if tb < 0 or te < 0 %}",
+      "    RESPOND TYPE=error MSG=\"HEAT_SYNC: a target is at or above that heater's full-power ceiling, heating both now\"",
+      "    M140 S{bed}",
+      "    M104 S{ext}",
+      "  {% elif tb >= te %}",
+      "    RESPOND MSG=\"HEAT_SYNC: bed first, extruder in {(tb - te)|round(0)|int} s (about {tb|round(0)|int} s to target)\"",
+      "    M140 S{bed}",
+      "    {% if tb - te >= 1 %}G4 P{((tb - te) * 1000)|round(0)|int}{% endif %}",
+      "    M104 S{ext}",
+      "  {% else %}",
+      "    RESPOND MSG=\"HEAT_SYNC: extruder first, bed in {(te - tb)|round(0)|int} s (about {te|round(0)|int} s to target)\"",
+      "    M104 S{ext}",
+      "    {% if te - tb >= 1 %}G4 P{((te - tb) * 1000)|round(0)|int}{% endif %}",
+      "    M140 S{bed}",
+      "  {% endif %}",
+      "  {% if wait %}",
+      "    {% if bed > 0 %}M190 S{bed}{% endif %}",
+      "    {% if ext > 0 %}M109 S{ext}{% endif %}",
+      "  {% endif %}",
+      "",
+    ].join("\n");
   },
   /** Seconds to heat from T0 to Tt at full power, or null if the model says it can't get there. */
   predict(m, T0, Tt) {
@@ -306,7 +388,7 @@ Panels.heat_sync = class extends Panel {
     this.heaterBar = el("div", { class: "hs-heaters" });
     const read = Button("refresh", "Read log", "color1", { side: true, lines: 1, onclick: (e, b) => this.readLog(b) });
     const clear = Button("delete", "Clear", "color2", { side: true, lines: 1, onclick: () => this.app.dialog("Clear Heat Sync", [
-      { name: "Clear", style: "dialog-error", cb: () => { HeatSync.save([]); this.sel = null; this.render(); } },
+      { name: "Clear", style: "dialog-error", cb: () => { HeatSync.save([]); Settings.set(HeatSync.CHANGES, {}); this.sel = null; this.render(); } },
       { name: "Cancel", style: "dialog-default" }], "Forget every recorded heat-up?") });
     this.left = el("div", { class: "hs-left scroll" });
     this.canvas = el("canvas", { class: "hs-chart" });
@@ -316,9 +398,60 @@ Panels.heat_sync = class extends Panel {
     this.right = el("div", { class: "hs-right" }, this.legend, this.canvas, this.info);
     this.body = el("div", { class: "hs-body fill" }, this.left, this.right);
     const model = Button("fine-tune", "Model", "color3", { side: true, lines: 1, onclick: () => this.openModel() });
+    const exp = Button("file", "Export", "color4", { side: true, lines: 1, onclick: (e, b) => this.exportCfg(b) });
     this.main = el("div", { class: "fill", style: { display: "flex", flexDirection: "column", minHeight: 0 } },
-      el("div", { class: "hs-top" }, this.heaterBar, model, read, clear), this.body, el("div", { class: "hs-foot" }, this.status));
+      el("div", { class: "hs-top" }, this.heaterBar, model, exp, read, clear), this.body, el("div", { class: "hs-foot" }, this.status));
     this.el.append(this.main);
+  }
+
+  // ------------------------------------------------------------ Export: heat_sync.cfg next to printer.cfg
+  exportCfg(btn) {
+    const text = HeatSync.cfg();
+    if (!text) { this.app.popup("Export needs both a bed and an extruder model: record a heat-up of each first", 2); return; }
+    const body = el("div", {},
+      el("div", {}, "Writes heat_sync.cfg in the printer's config folder, next to printer.cfg (replacing the old one), with both heater models and a HEAT_SYNC macro:"),
+      el("pre", { class: "hs-cfg scroll" }, text));
+    this.app.dialog("Export to printer", [
+      { name: "Export", style: "dialog-primary", cb: () => this.doExport(text, btn) },
+      { name: "Cancel", style: "dialog-default" }], body);
+  }
+  async doExport(text, btn) {
+    if (btn) btn.busy(true);
+    this.status.textContent = "Writing heat_sync.cfg…";
+    try {
+      await moonrakerConfigFile(this.app, "heat_sync.cfg", text);
+      this.status.textContent = `heat_sync.cfg written · ${new Date().toTimeString().slice(0, 5)}`;
+      // already loaded (included from printer.cfg or another file): only a restart is needed
+      let included = (this.p.macros || []).some((m) => m.toUpperCase() === "HEAT_SYNC");
+      let cfg = null;
+      if (!included) {
+        cfg = await moonrakerConfigFile(this.app, "printer.cfg");
+        included = typeof cfg === "string" && /^\s*\[include\s+[^\]]*heat_sync[^\]]*\]/im.test(cfg);
+      }
+      const restart = () => this.app.mr.call("printer.restart").then(() => this.app.popup("Klipper restarting", 1)).catch((e) => this.app.popup(`Restart failed: ${e.message || e}`, 2));
+      if (included) {
+        this.app.dialog("heat_sync.cfg written", [
+          { name: "Restart Klipper", style: "dialog-primary", cb: restart },
+          { name: "Later", style: "dialog-default" }],
+          "printer.cfg already includes it. Restart Klipper to load the new models?\n\nA running print is stopped.");
+        return;
+      }
+      if (typeof cfg !== "string") { this.app.dialog("heat_sync.cfg written", [{ name: "OK", style: "dialog-default" }], "Couldn't find printer.cfg to add the include. Add this line to your printer config:\n\n[include heat_sync.cfg]"); return; }
+      const add = async (andRestart) => {
+        try {
+          await moonrakerConfigFile(this.app, "printer.cfg", `[include heat_sync.cfg]\n${cfg}`);
+          this.status.textContent = `heat_sync.cfg written · included from printer.cfg · ${new Date().toTimeString().slice(0, 5)}`;
+          if (andRestart) restart();
+        } catch (e) { this.status.textContent = `Couldn't update printer.cfg: ${e.message}`; }
+      };
+      this.app.dialog("Include it in printer.cfg?", [
+        { name: "Add + restart", style: "dialog-primary", cb: () => add(true) },
+        { name: "Add only", style: "dialog-default", cb: () => add(false) },
+        { name: "Not now", style: "dialog-default" }],
+        "Klipper only reads heat_sync.cfg when printer.cfg includes it. Add this line at the top of printer.cfg?\n\n[include heat_sync.cfg]\n\nThe rest of printer.cfg stays as it is. Restarting Klipper stops a running print.");
+    } catch (e) {
+      this.status.textContent = `Couldn't write heat_sync.cfg: ${e.message}`;
+    } finally { if (btn) btn.busy(false); }
   }
 
   // ------------------------------------------------------------ Model page: edit the model, see it over the real run
@@ -466,12 +599,29 @@ Panels.heat_sync = class extends Panel {
     const card = el("div", { class: "hs-card" });
     if (m) {
       const dev = this.devFor(this.heater), now = this.p.stat(dev, "temperature");
+      // what the last Read log that added heat-ups changed: old → new
+      const ch = HeatSync.changes(this.heater);
+      const fields = [["τ", "tau", 0, " s"], ["Lag", "lag", 1, " s"], ["T∞ full power", "tinf", 0, " °C"], ["Peak rate", "rmax", 2, " °C/s"]];
+      const cell = (src, key, d, u) => {
+        const v = src[key], fmt = (x) => (typeof x === "number" && isFinite(x) ? x.toFixed(d) : "–");
+        const old = !src.custom && ch && ch.before ? ch.before[key] : undefined;
+        if (typeof old !== "number" || fmt(old) === fmt(v)) return el("b", {}, `${fmt(v)}${u}`);
+        return el("b", {}, el("span", { class: "hs-old" }, fmt(old)), " → ", `${fmt(v)}${u}`,
+          el("span", { class: v > old ? "hs-up" : "hs-down" }, ` ${v > old ? "▲" : "▼"}${Math.abs(v - old).toFixed(d)}`));
+      };
       card.append(el("div", { class: "title" }, `${this.heater === "heater_bed" ? "Bed" : prettify(this.heater)} ${m.custom ? "saved model (Model page)" : `model · ${m.n} run${m.n === 1 ? "" : "s"}`}`),
-        el("div", { class: "hs-kv" },
-          el("span", {}, "τ"), el("b", {}, `${m.tau.toFixed(0)} s`),
-          el("span", {}, "Lag"), el("b", {}, `${m.lag.toFixed(1)} s`),
-          el("span", {}, "T∞ full power"), el("b", {}, `${m.tinf.toFixed(0)} °C`),
-          el("span", {}, "Peak rate"), el("b", {}, `${m.rmax.toFixed(2)} °C/s`)));
+        el("div", { class: "hs-kv" }, ...fields.flatMap(([label, key, d, u]) => [el("span", {}, label), cell(m, key, d, u)])));
+      if (ch && ch.after) {
+        const when = new Date(ch.at), stamp = `${when.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${when.toTimeString().slice(0, 5)}`;
+        const added = `+${ch.added} heat-up${ch.added === 1 ? "" : "s"} ${stamp}`;
+        if (!ch.before) card.append(el("div", { class: "desc hs-change" }, `${added}: first measured model`));
+        else if (m.custom) {
+          // the saved model doesn't move; say what the measured one did
+          const diffs = fields.filter(([, k, d]) => ch.before[k].toFixed(d) !== ch.after[k].toFixed(d))
+            .map(([label, k, d, u]) => `${label} ${ch.before[k].toFixed(d)} → ${ch.after[k].toFixed(d)}${u}`);
+          card.append(el("div", { class: "desc hs-change" }, `${added}, measured model: ${diffs.length ? diffs.join(" · ") : "unchanged"}`));
+        } else card.append(el("div", { class: "desc hs-change" }, `${added} · old → new`));
+      }
       const presets = Object.entries(Settings.get("preheat") || {});
       const key = this.heater === "heater_bed" ? "bed" : this.heater.startsWith("extruder") ? "extruder" : null;
       if (key && typeof now === "number") {
