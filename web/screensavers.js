@@ -51,6 +51,33 @@ const Screensavers = {
   },
 
   savers: {},
+
+  // ------------------------------------------------------------ per-saver settings (gear beside it in the picker)
+  /** key -> {title, store, fields: [[name, field, [[value, label], ...], default]]} */
+  configs: {},
+  options(key) {
+    const c = this.configs[key], saved = Settings.get(c.store) || {}, out = {};
+    for (const [, f, , def] of c.fields) out[f] = saved[f] !== undefined ? saved[f] : def;
+    return out;
+  },
+  /** The settings dialog for one saver: a row of choices per setting, Preview and Done. */
+  configure(app, key) {
+    const c = this.configs[key];
+    const cur = this.options(key);
+    const body = el("div", { class: "ss-config" }, ...c.fields.map(([name, f, choices]) => {
+      const labels = Object.fromEntries(choices.map(([v, l]) => [String(v), l]));
+      const tr = ToggleRow(choices.map(([v]) => String(v)), String(cur[f]), (v) => {
+        const keep = { ...(Settings.get(c.store) || {}) };
+        keep[f] = choices.find(([x]) => String(x) === v)[0];
+        Settings.set(c.store, keep);
+      }, (v) => labels[v], true);
+      return el("div", { class: "ss-config-row" }, el("div", { class: "name" }, name), tr.el);
+    }));
+    app.dialog(c.title, [
+      { name: "Preview", style: "dialog-primary", cb: () => { Settings.set("screensaver", key); setTimeout(() => app.showScreensaver(true), 200); } },
+      { name: "Reset", style: "dialog-default", cb: () => { Settings.set(c.store, {}); this.configure(app, key); } },
+      { name: "Done", style: "dialog-default" }], body);
+  },
 };
 
 // ================================================================= Pipes: pipes grow through a 3D grid, turning at random
@@ -322,13 +349,25 @@ Screensavers.savers.status = (host, app) => {
    between), a quarter layer per frame. Lava-lamp look: the plane is warped by slow, large waves, the cell size swells
    and shrinks from place to place, and the height runs ahead in some areas and behind in others, so blobs of the
    pattern bulge, drift and morph instead of marching in step. The colour shifts over minutes so nothing burns in. */
+Screensavers.configs.gyroid = {
+  title: "Gyroid layers", store: "ss_gyroid",
+  fields: [
+    ["Speed", "speed", [[0.1, "10%"], [0.25, "25%"], [0.5, "50%"], [1, "100%"]], 0.25],
+    ["Frame rate", "fps", [[12, "12 fps"], [24, "24 fps"], [30, "30 fps"], [60, "60 fps"]], 24],
+    ["Lava-lamp warp", "warp", [[0, "Off"], [0.5, "Gentle"], [1, "Medium"], [1.6, "Strong"]], 1],
+    ["Cell size", "cell", [[0.1, "Small"], [0.16, "Medium"], [0.24, "Large"], [0.36, "Huge"]], 0.16],
+    ["Line width", "width", [[0.03, "Thin"], [0.045, "Normal"], [0.065, "Thick"]], 0.045],
+    ["Colour", "color", [["cycle", "Cycle"], [0.04, "Orange"], [0.0, "Red"], [0.3, "Green"], [0.58, "Blue"], [0.78, "Purple"], ["white", "White"]], "cycle"],
+  ],
+};
 Screensavers.savers.gyroid = (host) => {
+  const o = Screensavers.options("gyroid");
   const { c, fit } = Screensavers.canvas(host);
   const gl = c.getContext("webgl", { antialias: false, alpha: false });
   if (!gl) { c.remove(); throw new Error("no WebGL"); }
   const vs = "attribute vec2 aP; void main() { gl_Position = vec4(aP, 0.0, 1.0); }";
   const fs = `precision highp float;
-    uniform float uZ, uCell, uLayer, uHue, uT;
+    uniform float uZ, uCell, uLayer, uHue, uT, uWarp, uWidth, uWhite;
     float gy(vec2 p, float z, out float g) {
       float sx = sin(p.x), cx = cos(p.x), sy = sin(p.y), cy = cos(p.y), sz = sin(z), cz = cos(z);
       vec2 grad = vec2(cx * cy - sz * sx, -sx * sy + cy * cz);
@@ -339,11 +378,11 @@ Screensavers.savers.gyroid = (host) => {
     vec2 warp(vec2 p, out float dz, out float sc) {
       float t = uT;
       vec2 q = p * 0.11;
-      sc = 1.0 + 0.28 * sin(q.x * 0.9 + t * 0.07) * cos(q.y * 1.1 - t * 0.05);   // cells swell and shrink
+      sc = 1.0 + uWarp * 0.28 * sin(q.x * 0.9 + t * 0.07) * cos(q.y * 1.1 - t * 0.05);   // cells swell and shrink
       vec2 w = vec2(sin(q.y * 1.3 + t * 0.11) + 0.6 * sin(q.x * 2.1 - q.y * 0.7 + t * 0.17),
                     cos(q.x * 1.2 - t * 0.09) + 0.6 * cos(q.y * 1.9 + q.x * 0.8 - t * 0.13));
-      dz = 1.6 * sin(q.x * 0.8 + q.y * 0.6 + t * 0.06) * cos(q.y * 0.9 - t * 0.08);
-      return p * sc + w * 2.2;
+      dz = uWarp * 1.6 * sin(q.x * 0.8 + q.y * 0.6 + t * 0.06) * cos(q.y * 0.9 - t * 0.08);
+      return p * sc + w * 2.2 * uWarp;
     }
     // distance in pixels from the gyroid line at height z
     float line(vec2 px, float z) {
@@ -355,11 +394,11 @@ Screensavers.savers.gyroid = (host) => {
     vec3 hue(float h) { return clamp(abs(mod(h * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0); }
     void main() {
       vec2 px = gl_FragCoord.xy;
-      float w = uCell * 0.045;                 // extrusion width in pixels
+      float w = uCell * uWidth;                // extrusion width in pixels
       vec3 col = vec3(0.02, 0.02, 0.025);
       vec2 q = px / uCell;
       // the colour drifts a little across the screen too, like light through wax
-      vec3 fil = mix(hue(uHue + 0.06 * sin(q.x * 0.35 + uT * 0.05) * cos(q.y * 0.3 - uT * 0.04)), vec3(1.0), 0.15);
+      vec3 fil = mix(hue(uHue + 0.06 * sin(q.x * 0.35 + uT * 0.05) * cos(q.y * 0.3 - uT * 0.04)), vec3(1.0), mix(0.15, 1.0, uWhite));
       // the layers below fade out under the current one
       for (int k = 3; k >= 1; k--) {
         float a = smoothstep(w, w * 0.4, line(px, uZ - float(k) * uLayer));
@@ -379,23 +418,27 @@ Screensavers.savers.gyroid = (host) => {
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
   const aP = gl.getAttribLocation(prog, "aP");
   gl.enableVertexAttribArray(aP); gl.vertexAttribPointer(aP, 2, gl.FLOAT, false, 0, 0);
-  const U = {}; for (const n of ["uZ", "uCell", "uLayer", "uHue", "uT"]) U[n] = gl.getUniformLocation(prog, n);
+  const U = {}; for (const n of ["uZ", "uCell", "uLayer", "uHue", "uT", "uWarp", "uWidth", "uWhite"]) U[n] = gl.getUniformLocation(prog, n);
 
   // a layer is 1/24 of a gyroid period (about what 0.2 mm layers in 5 mm cells look like); a quarter layer per frame
-  const LAYER = (Math.PI * 2) / 24, FPS = 24, PER_FRAME = 0.25;
-  let t = 0, hue = Math.random(), shown = -1;
+  const LAYER = (Math.PI * 2) / 24, FPS = o.fps, PER_FRAME = o.speed;
+  const cycle = o.color === "cycle";
+  let t = 0, hue = cycle ? Math.random() : typeof o.color === "number" ? o.color : 0, shown = -1;
   const stop = Screensavers.loop((dt) => {
     const resized = fit();
     t += dt;
-    hue = (hue + dt / 240) % 1; // the "filament" colour changes over a few minutes
+    if (cycle) hue = (hue + dt / 240) % 1; // the "filament" colour changes over a few minutes
     const frame = Math.floor(t * FPS);
     if (frame === shown && !resized) return; // the canvas keeps the last frame
     shown = frame;
     const W = c.width, H = c.height;
     gl.viewport(0, 0, W, H);
-    gl.uniform1f(U.uCell, Math.min(W, H) * 0.16);
+    gl.uniform1f(U.uCell, Math.min(W, H) * o.cell);
+    gl.uniform1f(U.uWarp, o.warp);
+    gl.uniform1f(U.uWidth, o.width);
+    gl.uniform1f(U.uWhite, o.color === "white" ? 1 : 0);
     gl.uniform1f(U.uLayer, LAYER);
-    gl.uniform1f(U.uZ, (frame % (24 / PER_FRAME)) * LAYER * PER_FRAME); // the gyroid repeats every 2π in z
+    gl.uniform1f(U.uZ, ((frame * PER_FRAME) % 24) * LAYER); // the gyroid repeats every 2π in z
     gl.uniform1f(U.uT, (frame / FPS) % 36000);
     gl.uniform1f(U.uHue, hue);
     gl.drawArrays(gl.TRIANGLES, 0, 3);

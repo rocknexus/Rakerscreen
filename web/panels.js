@@ -2082,7 +2082,8 @@ const KS_OPTIONS = [
     options: [0, 1, 2, 3, 4, 5].map((n) => [String(n), `${n} ${n === 1 ? "second" : "seconds"}`]) },
   { key: "screensaver", cat: "Display", name: "Screensaver", type: "dropdown", extra: true,
     tip: "Shown after the Screen Power Off Time. Picking one shows a preview: touch to close it",
-    options: Screensavers.list, cb: (app) => setTimeout(() => app.showScreensaver(true), 300) },
+    options: Screensavers.list, cb: (app) => setTimeout(() => app.showScreensaver(true), 300),
+    configure: (v) => (Screensavers.configs[v] ? (app) => Screensavers.configure(app, v) : null) },
   { key: "screensaver_blackout", cat: "Display", name: "Screensaver Black-out", type: "dropdown", extra: true,
     tip: "Turns an animated screensaver into a black screen after this long (and dims the backlight with Screen DPMS)",
     options: [["0", "Never"], ["300", "5 minutes"], ["900", "15 minutes"], ["1800", "30 minutes"], ["3600", "1 hour"], ["7200", "2 hours"]] },
@@ -2115,7 +2116,10 @@ function optionRow(app, def) {
           const ob = Button(null, l, String(v) === String(Settings.get(def.key)) ? "selected" : null, { lines: 1, onclick: () => {
             close(); Settings.set(def.key, v); b.setLabel(label()); if (def.cb) def.cb(app);
           } });
-          list.append(ob);
+          // a choice with its own settings (screensavers) gets a gear beside it
+          const conf = def.configure && def.configure(v);
+          if (conf) list.append(el("div", { class: "choice-conf" }, ob, Button("settings", null, "choice-gear", { onclick: () => { close(); conf(app); } })));
+          else list.append(ob);
         }
         close = app.dialog(def.name, [{ name: "Cancel", style: "dialog-error" }], list);
       });

@@ -325,6 +325,14 @@ body:not(.show-cursor), body:not(.show-cursor) * { cursor: none !important; }
 .settings-fit .switch.on::after { left: 2.4em; }
 .choice-list .btn { flex: 0 0 auto; margin: .15em 0; padding: .7em; min-height: 2.8em; border-bottom: 1px solid var(--lines); }
 .choice-list .btn.selected { background: var(--active); font-weight: bold; }
+.choice-conf { display: flex; align-items: stretch; gap: .3em; }
+.choice-conf > .btn:first-child { flex: 1 1 auto; min-width: 0; }
+#dialog .choice-list .btn.choice-gear { flex: 0 0 2.4em; min-height: 0; padding: 0; display: flex; align-items: center; justify-content: center; }
+#dialog .choice-list .btn.choice-gear img { width: 1.15em; height: 1.15em; max-width: none; max-height: none; margin: 0; flex: 0 0 auto; }
+.ss-config { display: flex; flex-direction: column; gap: .5em; width: min(92vw, 40em); max-height: 62vh; overflow-y: auto; text-align: left; }
+.ss-config-row .name { font-size: .85em; opacity: .8; margin-bottom: .15em; }
+.ss-config-row .togglerow { display: flex; flex-wrap: wrap; gap: .2em; }
+.ss-config-row .togglerow .btn { flex: 1 1 0; min-width: 4.5em; padding: .45em .3em; }
 
 /* ================= screensaver / lock ================= */
 #screensaver { position: fixed; inset: 0; background: #000; z-index: 100; display: none; }
