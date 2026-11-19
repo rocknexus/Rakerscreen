@@ -12,15 +12,21 @@
 const UPDATE_REPO = "rocknexus/Rakerscreen";
 const UPDATE_EVERY_MS = 6 * 3600 * 1000;
 
-/** -1 / 0 / 1 comparing "0.2.10" style versions (a leading v is ignored) */
+/** -1 / 0 / 1 comparing "0.2.10" style versions (a leading v is ignored). A -dev build comes before the plain
+    release of the same number: 0.4.3-dev < 0.4.3 < 0.4.4-dev (and 0.4.2-dev.1 < 0.4.2-dev.2 < 0.4.2). */
 function compareVersions(a, b) {
-  const pa = String(a).replace(/^v/i, "").split(/[.\-+]/).map((n) => parseInt(n, 10) || 0);
-  const pb = String(b).replace(/^v/i, "").split(/[.\-+]/).map((n) => parseInt(n, 10) || 0);
-  for (let i = 0; i < Math.max(pa.length, pb.length, 3); i++) {
-    const d = (pa[i] || 0) - (pb[i] || 0);
+  const parse = (v) => {
+    const m = String(v).trim().replace(/^v/i, "").match(/^(\d+(?:\.\d+)*)(?:-dev(?:\.(\d+))?)?/);
+    if (!m) return { n: [0], dev: false, k: 0 };
+    return { n: m[1].split(".").map((x) => parseInt(x, 10) || 0), dev: /-dev/.test(String(v)), k: parseInt(m[2], 10) || 0 };
+  };
+  const pa = parse(a), pb = parse(b);
+  for (let i = 0; i < Math.max(pa.n.length, pb.n.length, 3); i++) {
+    const d = (pa.n[i] || 0) - (pb.n[i] || 0);
     if (d) return d > 0 ? 1 : -1;
   }
-  return 0;
+  if (pa.dev !== pb.dev) return pa.dev ? -1 : 1;
+  return pa.k === pb.k ? 0 : pa.k > pb.k ? 1 : -1;
 }
 
 class Updater {

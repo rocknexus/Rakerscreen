@@ -15,7 +15,7 @@ if (-not (Test-Path "$root\pocketscreen-debug.keystore")) {
 & "$root\build.ps1"
 if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { throw "build failed" }
 
-$m = Select-String -Path "$root\web\main.js" -Pattern 'const VERSION = "(\d+\.\d+\.\d+(?:-dev\.\d+)?)"' | Select-Object -First 1
+$m = Select-String -Path "$root\web\main.js" -Pattern 'const VERSION = "(\d+\.\d+\.\d+(?:-dev(?:\.\d+)?)?)"' | Select-Object -First 1
 $ver = $m.Matches[0].Groups[1].Value
 $apk = Join-Path $root "releases\Rakerscreen-v$ver.apk"
 if (-not (Test-Path $apk)) { throw "$apk not found" }
@@ -25,7 +25,7 @@ $ErrorActionPreference = "Continue"
 & gh release view "v$ver" --repo $Repo *> $null
 $exists = $LASTEXITCODE -eq 0
 $ErrorActionPreference = "Stop"
-if ($exists) { throw "Release v$ver already exists. Bump VERSION in web/main.js first (for a dev build, raise the -dev.N number)." }
+if ($exists) { throw "Release v$ver already exists. Bump VERSION in web/main.js first." }
 
 if (-not $Notes) { $Notes = "Rakerscreen $ver" }
 # tag the commit that was built (it must be pushed), not whatever the default branch points at
@@ -33,7 +33,6 @@ $sha = (& git -C $root rev-parse HEAD).Trim()
 & git -C $root fetch -q origin
 & git -C $root branch -r --contains $sha | Out-String | ForEach-Object { if (-not $_.Trim()) { throw "Commit $sha isn't pushed yet. Push it first." } }
 # dev builds are normal releases, not pre-releases: the app's updater only looks at the latest release
-$title = if ($ver -match '^(.+)-dev\.(\d+)$') { "v$($Matches[1])-dev (build $($Matches[2]))" } else { "v$ver" }
-& gh release create "v$ver" $apk --repo $Repo --title $title --notes $Notes --latest --target $sha
+& gh release create "v$ver" $apk --repo $Repo --title "v$ver" --notes $Notes --latest --target $sha
 if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }
 Write-Host "Published v$ver to https://github.com/$Repo/releases/tag/v$ver"

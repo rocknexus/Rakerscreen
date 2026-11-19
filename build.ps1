@@ -1,5 +1,5 @@
 # Builds releases\Rakerscreen-v<version>.apk with the Android SDK command-line tools only (no Gradle).
-# The version comes from `const VERSION = "x.y.z"` (or "x.y.z-dev.N" for a dev build) in web/main.js, the single place to bump it.
+# The version comes from `const VERSION = "x.y.z"` (or "x.y.z-dev" for a dev build) in web/main.js, the single place to bump it.
 # Requirements: Android SDK (platform + build-tools) and a JDK 17+ (Android Studio's bundled JBR works).
 #   powershell -ExecutionPolicy Bypass -File build.ps1
 param(
@@ -10,15 +10,15 @@ $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
 $out = Join-Path $root "build"
 
-$m = Select-String -Path "$root\web\main.js" -Pattern 'const VERSION = "(\d+)\.(\d+)\.(\d+)(?:-dev\.(\d+))?"' | Select-Object -First 1
+$m = Select-String -Path "$root\web\main.js" -Pattern 'const VERSION = "(\d+)\.(\d+)\.(\d+)(-dev(?:\.(\d+))?)?"' | Select-Object -First 1
 if (-not $m) { throw "VERSION not found in web/main.js" }
 $g = $m.Matches[0].Groups
-$dev = if ($g[4].Success) { [int]$g[4].Value } else { 0 }
-$VersionName = "$($g[1].Value).$($g[2].Value).$($g[3].Value)" + $(if ($g[4].Success) { "-dev.$dev" } else { "" })
+$VersionName = "$($g[1].Value).$($g[2].Value).$($g[3].Value)$($g[4].Value)"
 # monotonically increasing versionCode so every new version installs over the previous one:
-# (major*10000 + minor*100 + patch)*100 + dev build, so x.y.z-dev.N comes after x.y.z and before the next patch.
-# (Until 0.4.3 it was major*10000 + minor*100 + patch; the new codes start at 40201, above the last old one, 403.)
-$VersionCode = ([int]$g[1].Value * 10000 + [int]$g[2].Value * 100 + [int]$g[3].Value) * 100 + $dev
+# (major*10000 + minor*100 + patch)*100, plus 50 for a plain release, so x.y.z-dev comes before x.y.z
+# (and x.y.z-dev.N, if ever used, before that). Until 0.4.3 it was major*10000 + minor*100 + patch (last: 403).
+$suffix = if (-not $g[4].Success) { 50 } elseif ($g[5].Success) { [Math]::Min(49, [int]$g[5].Value) } else { 0 }
+$VersionCode = ([int]$g[1].Value * 10000 + [int]$g[2].Value * 100 + [int]$g[3].Value) * 100 + $suffix
 Write-Host "Version: $VersionName (code $VersionCode)"
 
 $platform = Get-ChildItem "$Sdk\platforms" | Sort-Object { [version](($_.Name -replace '^android-', '') -replace '[^0-9.]', '') } | Select-Object -Last 1
