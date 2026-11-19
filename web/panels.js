@@ -1643,7 +1643,7 @@ Panels.limits = class extends Panel {
     const ratio = o.key === "minimum_cruise_ratio";
     Input.number({
       title: o.name, value: typeof cur === "number" ? Math.round(cur * 100) / 100 : o.def, unit: o.units || undefined, ok: "Set",
-      min: 0, max: ratio ? 0.99 : undefined, decimals: o.step < 1 ? 2 : 0,
+      min: 0, max: ratio ? 0.99 : undefined, decimals: o.step < 1 ? 2 : 0, keepOpen: true, // Set applies, Close leaves
       desc: `Printer config: ${o.def}${o.units ? " " + o.units : ""}`,
       onSubmit: (v) => { o.paint(v); this.gcode(`SET_VELOCITY_LIMIT ${o.cmd}=${v}`); },
     });

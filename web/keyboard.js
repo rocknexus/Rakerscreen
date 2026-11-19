@@ -321,16 +321,24 @@ const Input = {
         setTimeout(() => Input.open(entry, true), 0);
         return false;
       }
+      if (o.keepOpen) {
+        // apply and stay: the field stays selected for the next value, and the keyboard stays up
+        if (o.onSubmit) o.onSubmit(v);
+        err.textContent = o.keepOpen === true ? "Set ✓" : o.keepOpen;
+        err.classList.add("input-ok");
+        setTimeout(() => Input.open(entry, true), 0);
+        return false;
+      }
       close();
       if (o.onSubmit) o.onSubmit(v);
       return true;
     };
-    entry.addEventListener("input", () => { err.textContent = ""; entry.classList.remove("invalid"); });
+    entry.addEventListener("input", () => { err.textContent = ""; err.classList.remove("input-ok"); entry.classList.remove("invalid"); });
     entry.addEventListener("keydown", (e) => { if (e.key === "Enter" && !submit()) e.preventDefault(); });
     close = app.dialog(o.title || "", [
       { name: o.ok || "OK", style: "dialog-default", handler: submit },
       ...(o.buttons || []),
-      { name: "Cancel", style: "dialog-error", cb: o.onCancel },
+      { name: o.keepOpen ? "Close" : "Cancel", style: "dialog-error", cb: o.onCancel },
     ], body);
     setTimeout(() => Input.open(entry, o.selectAll !== false), 30);
     return close;
@@ -350,7 +358,7 @@ const Input = {
     const desc = [o.desc, range ? `Range: ${range}${unit}` : null].filter(Boolean).join("\n");
     return Input.prompt({
       title: o.title, value: o.value, layout: "numeric", negative: o.min === undefined || o.min < 0,
-      desc, ok: o.ok, buttons: o.buttons, onCancel: o.onCancel,
+      desc, ok: o.ok, buttons: o.buttons, onCancel: o.onCancel, keepOpen: o.keepOpen,
       validate: (s) => {
         const t = s.trim().replace(",", ".");
         if (!/^[-+]?(\d+\.?\d*|\.\d+)$/.test(t)) return "Enter a number";

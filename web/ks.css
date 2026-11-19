@@ -440,6 +440,7 @@ body:not(.show-cursor), body:not(.show-cursor) * { cursor: none !important; }
 .input-entry.invalid { border-color: var(--error, #E6474E); }
 .input-error { color: var(--error, #E6474E); min-height: 0; }
 .input-error:empty { display: none; }
+.input-error.input-ok { color: var(--echo, #2e9e5b); }
 body.kb-open .dialog-body .desc { font-size: .85em; }
 /* Move panel: coordinates open a position entry */
 .pos-entry { text-decoration: underline dotted; text-underline-offset: .25em; }
