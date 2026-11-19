@@ -88,7 +88,7 @@ class HeaterList {
     this.el = el("div", { style: { display: "flex", flexDirection: "column", minHeight: 0, height: "100%" } }, this.tiles, list, this.graph.canvas);
     const devices = this.p.tempDevices().filter((d) => {
       const n = devName(d);
-      // hideChips (temperature panel) leaves out MCU/host chip sensors: nothing to set there
+      // hideChips (main menu, temperature panel) leaves out MCU/host chip sensors: nothing to set there
       const chip = hideChips && d.startsWith("temperature_sensor ") && (/mcu|host|rpi|raspberry/i.test(n) || /temperature_(mcu|host)/.test(this.p.configSection(d).sensor_type || ""));
       return !n.startsWith("_") && !chip && !deviceFiltered(this.p, d) && typeof this.p.stat(d, "temperature") === "number";
     }).sort();
@@ -158,7 +158,7 @@ Panels.main_menu = class extends Panels.menu {
     this.heaters = new HeaterList(app, {
       onName: (d) => { this.heaters.graph.toggle(d); this.heaters.refreshVisibility(); },
       onTemp: (d) => this.showNumpad(d),
-      tiles: true,
+      tiles: true, hideChips: true,
     });
     this.right = el("div", { style: { minHeight: 0, minWidth: 0, display: "flex", flexDirection: "column" } }, this.scroll);
     this.layoutGrid();
