@@ -20,8 +20,12 @@ $ver = $m.Matches[0].Groups[1].Value
 $apk = Join-Path $root "releases\Rakerscreen-v$ver.apk"
 if (-not (Test-Path $apk)) { throw "$apk not found" }
 
+# (Windows PowerShell 5.1 turns gh's "release not found" on stderr into a terminating error under "Stop")
+$ErrorActionPreference = "Continue"
 & gh release view "v$ver" --repo $Repo *> $null
-if ($LASTEXITCODE -eq 0) { throw "Release v$ver already exists. Bump VERSION in web/main.js first." }
+$exists = $LASTEXITCODE -eq 0
+$ErrorActionPreference = "Stop"
+if ($exists) { throw "Release v$ver already exists. Bump VERSION in web/main.js first." }
 
 if (-not $Notes) { $Notes = "Rakerscreen $ver" }
 # tag the commit that was built (it must be pushed), not whatever the default branch points at
