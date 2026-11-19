@@ -318,8 +318,11 @@ public class MainActivity extends Activity {
          *  Done natively: a page loaded from file:// can't fetch from Moonraker (CORS), and this adds the API key. */
         @JavascriptInterface
         public void fetchLog(final int id, final String host, final int port, final String name, final String apiKey, final int tailBytes) {
-            if (host == null || !HOST.matcher(host).matches() || port < 1 || port > 65535 || name == null || !LOGNAME.matcher(name).matches()) {
-                js("window.__pslog && __pslog(" + id + ",0," + JSONObject.quote("Invalid log request") + ")");
+            String bad = host == null || !HOST.matcher(host).matches() ? "host \"" + host + "\""
+                    : port < 1 || port > 65535 ? "port " + port
+                    : name == null || !LOGNAME.matcher(name).matches() ? "log name \"" + name + "\"" : null;
+            if (bad != null) {
+                js("window.__pslog && __pslog(" + id + ",0," + JSONObject.quote("Invalid log request: " + bad) + ")");
                 return;
             }
             final int tail = Math.max(1024, Math.min(tailBytes, 2 * 1024 * 1024));

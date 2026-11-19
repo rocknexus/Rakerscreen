@@ -1810,7 +1810,9 @@ function fetchMoonrakerLog(app, name, bytes = LOG_TAIL_BYTES) {
         if (code === 200 || code === 206) resolve(text);
         else reject(new Error(code ? `Moonraker answered HTTP ${code}` : text || "Request failed"));
       };
-      PSBridge.fetchLog(id, Settings.get("moonraker_host"), app.mr.port(), name, key, bytes);
+      // numbers must be real numbers here: Android turns a string passed for an int into 0
+      const host = String(Settings.get("moonraker_host") || "").trim().replace(/^\w+:\/\//, "").replace(/[/:].*$/, "");
+      PSBridge.fetchLog(id, host, parseInt(app.mr.port(), 10) || 7125, name, key, Math.round(bytes));
     });
   }
   const headers = { Range: `bytes=-${bytes}` };
