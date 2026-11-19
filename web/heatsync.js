@@ -13,7 +13,7 @@
 
 const HeatSync = {
   STORE: "heat_sync_runs",
-  MAX_PER_HEATER: 30,
+  MAX_PER_HEATER: 60,
   LOG_BYTES: 2 * 1024 * 1024, // about an hour of klippy.log
 
   // ------------------------------------------------------------ parsing
@@ -22,13 +22,21 @@ const HeatSync = {
     const series = {};
     let wall0 = null, mono0 = null, lastT = -Infinity, session = 0;
     const heat = /(\S+): target=(-?[\d.]+) temp=(-?[\d.]+) pwm=([\d.]+)/g;
+    // a rotated log (klippy.log.2026-11-18) starts with "=== Log rollover at Tue Nov 18 00:00:00 2026 ===" instead of
+    // Klipper's start line: that local time, pinned to the next Stats line's clock, dates its heat-ups (to a second or so)
+    let rollover = null;
+    const MON = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
     for (const line of text.split("\n")) {
       const sp = line.match(/Start printer at .*\(([\d.]+) ([\d.]+)\)/);
-      if (sp) { wall0 = parseFloat(sp[1]); mono0 = parseFloat(sp[2]); session++; lastT = -Infinity; continue; }
+      if (sp) { wall0 = parseFloat(sp[1]); mono0 = parseFloat(sp[2]); session++; lastT = -Infinity; rollover = null; continue; }
+      const ro = line.match(/Log rollover at \w{3} (\w{3}) +(\d+) (\d+):(\d+):(\d+) (\d{4})/);
+      if (ro && MON[ro[1]] !== undefined) { rollover = new Date(+ro[6], MON[ro[1]], +ro[2], +ro[3], +ro[4], +ro[5]).getTime() / 1000; continue; }
       const m = line.match(/^Stats ([\d.]+):/);
       if (!m) continue;
       const t = parseFloat(m[1]);
       if (t < lastT) { session++; wall0 = mono0 = null; } // restarted without a start line in view
+      if (rollover !== null && wall0 === null) { wall0 = rollover; mono0 = t; }
+      rollover = null;
       lastT = t;
       const wall = wall0 !== null ? wall0 + (t - mono0) : null;
       heat.lastIndex = 0;
@@ -153,20 +161,46 @@ const HeatSync = {
   load() { const v = Settings.get(this.STORE); return Array.isArray(v) ? v : []; },
   save(runs) { Settings.set(this.STORE, runs); },
   /** Analyse a log and add its heat-ups to the record. Returns {found, added}. */
-  record(text) {
+  record(text) { return this.addRuns(this.runsIn(text)); },
+  /** A whole klippy log (current or rotated) cut down to what Heat Sync reads. In the app this is done natively while
+      streaming, so a big day-long log never has to fit in the page; in a browser the full text is fetched. */
+  HEAT_LOG_MAX: 12 * 1024 * 1024,
+  fetchHeatLog(app, name) {
+    const key = Settings.get("moonraker_api_key") || "";
+    if (window.PSBridge && PSBridge.fetchLogHeat) {
+      return new Promise((resolve, reject) => {
+        const id = ++logReqId;
+        const timer = setTimeout(() => { delete logWaiters[id]; reject(new Error("Timed out")); }, 300000);
+        logWaiters[id] = (code, text) => {
+          clearTimeout(timer);
+          if (code === 200) resolve(text);
+          else reject(new Error(code ? `Moonraker answered HTTP ${code}` : text || "Request failed"));
+        };
+        const host = String(Settings.get("moonraker_host") || "").trim().replace(/^\w+:\/\//, "").replace(/[/:].*$/, "");
+        PSBridge.fetchLogHeat(id, host, parseInt(app.mr.port(), 10) || 7125, name, key, this.HEAT_LOG_MAX);
+      });
+    }
+    return fetch(`${app.mr.httpBase()}/server/files/logs/${encodeURIComponent(name)}`, { headers: key ? { "X-Api-Key": key } : {}, cache: "no-store" })
+      .then((r) => { if (!r.ok) throw new Error(`Moonraker answered HTTP ${r.status}`); return r.text(); });
+  },
+  READ_LOGS: "heat_sync_logs_read", // {file name: modified time} of klippy logs already read
+  /** Every heat-up in a log's text, analysed. */
+  runsIn(text) {
     const runs = [];
     for (const s of this.parse(text)) for (const run of this.findRuns(s)) runs.push(this.analyze(run));
-    return this.addRuns(runs);
+    return runs;
   },
   /** Add analysed heat-ups to the record (skipping ones already there). Returns {found, added}. */
   addRuns(runs) {
     const have = this.load(), ids = new Set(have.map((r) => r.id));
-    const fresh = runs.filter((r) => !ids.has(r.id));
+    const seen = new Set();
+    const fresh = runs.filter((r) => !ids.has(r.id) && !seen.has(r.id) && seen.add(r.id));
     let all = [...have, ...fresh];
-    // newest MAX_PER_HEATER per heater (by wall time when known, else as found)
+    // newest MAX_PER_HEATER per heater, oldest first (by wall time; undated ones count as oldest, in the order found)
     const by = {};
     for (const r of all) (by[r.heater] = by[r.heater] || []).push(r);
-    all = Object.values(by).flatMap((list) => list.slice(-this.MAX_PER_HEATER));
+    const when = (r) => (r.wall ? r.wall : 0);
+    all = Object.values(by).flatMap((list) => list.map((r, i) => [r, i]).sort((a, b) => when(a[0]) - when(b[0]) || a[1] - b[1]).map(([r]) => r).slice(-this.MAX_PER_HEATER));
     // what the new heat-ups changed in each heater's measured model, kept until the next read that adds some
     if (fresh.length) {
       const changes = {};
@@ -474,7 +508,7 @@ Panels.heat_sync = class extends Panel {
     this.sel = null;
     this.status = el("span", { class: "hs-status" });
     this.heaterBar = el("div", { class: "hs-heaters" });
-    const read = Button("refresh", "Read log", "color1", { side: true, lines: 1, onclick: (e, b) => this.readLog(b) });
+    const read = Button("refresh", "Read log", "color1", { side: true, lines: 1, onclick: (e, b) => this.readDialog(b) });
     const test = Button("heat-up", "Test heat", "color2", { side: true, lines: 1, onclick: () => (HeatSync.test && HeatSync.test.state === "running" ? this.openTest() : this.testDialog()) });
     const clear = Button("delete", "Clear", "color2", { side: true, lines: 1, onclick: () => this.app.dialog("Clear Heat Sync", [
       { name: "Clear", style: "dialog-error", cb: () => { HeatSync.save([]); Settings.set(HeatSync.CHANGES, {}); this.sel = null; this.render(); } },
@@ -849,6 +883,67 @@ Panels.heat_sync = class extends Panel {
       this.render();
     } catch (e) {
       this.status.textContent = `Couldn't read klippy.log: ${e.message}`;
+    } finally { if (btn) btn.busy(false); }
+  }
+  /** Pick which klippy logs to read: the current one and the rotated ones on the host (klippy.log.2026-11-18, ...). */
+  async readDialog(btn) {
+    let files;
+    if (btn) btn.busy(true);
+    try { files = await this.app.mr.call("server.files.list", { root: "logs" }); }
+    catch (e) { files = null; }
+    finally { if (btn) btn.busy(false); }
+    // no listing (older Moonraker, or not allowed): just the current log, as before
+    const logs = (files || []).filter((x) => x && /^klippy\.log(\.[A-Za-z0-9_.-]+)?$/.test(x.path || "") && !/\.(gz|zip|xz|bz2)$/i.test(x.path))
+      .sort((a, b) => (a.path === "klippy.log" ? -1 : b.path === "klippy.log" ? 1 : (b.modified || 0) - (a.modified || 0)));
+    if (logs.length <= 1) { this.readLog(btn); return; }
+    const done = Settings.get(HeatSync.READ_LOGS) || {};
+    const isRead = (x) => x.path !== "klippy.log" && done[x.path] && Math.abs(done[x.path] - (x.modified || 0)) < 1;
+    // the current log, and any older one not read yet
+    const pick = new Set(logs.filter((x) => x.path === "klippy.log" || !isRead(x)).map((x) => x.path));
+    const list = el("div", { class: "hs-loglist" });
+    const draw = () => {
+      list.innerHTML = "";
+      for (const x of logs) {
+        const when = x.modified ? new Date(x.modified * 1000) : null;
+        const meta = [fmtBytes(x.size || 0), when ? `${when.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${when.toTimeString().slice(0, 5)}` : "",
+          x.path === "klippy.log" ? "current" : isRead(x) ? "read before" : ""].filter(Boolean).join(" · ");
+        list.append(Button(null, `${pick.has(x.path) ? "☑" : "☐"} ${x.path}  ·  ${meta}`, pick.has(x.path) ? "selected" : null, { lines: 1, onclick: () => {
+          if (pick.has(x.path)) pick.delete(x.path); else pick.add(x.path);
+          draw();
+        } }));
+      }
+    };
+    draw();
+    const body = el("div", {}, el("div", { class: "desc", style: { marginBottom: ".4em" } },
+      "Klipper starts a new log every day and keeps the old ones. Pick the ones to read; each is read whole, keeping only the heater readings."), list);
+    this.app.dialog("Read Klipper logs", [
+      { name: "Read selected", style: "dialog-primary", cb: () => this.readLogs(logs.filter((x) => pick.has(x.path)), btn) },
+      { name: "Read all", style: "dialog-default", cb: () => this.readLogs(logs, btn) },
+      { name: "Cancel", style: "dialog-default" }], body);
+  }
+  /** Read the given klippy logs in turn and add all their heat-ups at once. */
+  async readLogs(logs, btn) {
+    if (!logs.length) { this.app.popup("Nothing picked", 1); return; }
+    if (btn) btn.busy(true);
+    const runs = [], failed = [], done = { ...(Settings.get(HeatSync.READ_LOGS) || {}) };
+    let bytes = 0;
+    try {
+      for (let i = 0; i < logs.length; i++) {
+        const x = logs[i];
+        this.status.textContent = `Reading ${x.path} (${i + 1} of ${logs.length}, ${fmtBytes(x.size || 0)})…`;
+        try {
+          const text = await HeatSync.fetchHeatLog(this.app, x.path);
+          bytes += x.size || 0;
+          runs.push(...HeatSync.runsIn(text));
+          done[x.path] = x.modified || 0;
+        } catch (e) { failed.push(`${x.path}: ${e.message}`); }
+      }
+      Settings.set(HeatSync.READ_LOGS, done);
+      const { found, added } = HeatSync.addRuns(runs);
+      this.status.textContent = `${found} heat-up${found === 1 ? "" : "s"} in ${logs.length - failed.length} log${logs.length - failed.length === 1 ? "" : "s"} (${fmtBytes(bytes)}) · ${added} new · ${new Date().toTimeString().slice(0, 5)}`;
+      if (failed.length) this.app.popup(`Couldn't read ${failed.join("; ")}`, 2);
+      this.sel = null;
+      this.render();
     } finally { if (btn) btn.busy(false); }
   }
   heaters() { return [...new Set(HeatSync.load().map((r) => r.heater))].sort((a, b) => (a === "extruder" ? -1 : b === "extruder" ? 1 : a.localeCompare(b))); }

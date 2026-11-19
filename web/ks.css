@@ -498,6 +498,10 @@ body.kb-open .dialog-body .desc { font-size: .85em; }
 .hs-old { opacity: .6; font-weight: normal; }
 .hs-up, .hs-down { opacity: .65; font-weight: normal; font-size: .85em; white-space: nowrap; }
 .hs-change { margin-top: .3em; font-style: italic; }
+.hs-loglist { display: flex; flex-direction: column; gap: .2em; max-height: 50vh; overflow-y: auto; text-align: left; }
+.hs-loglist .btn { justify-content: flex-start; padding: .55em .7em; min-height: 2.4em; font-size: .9em; }
+.hs-loglist .btn.selected { background: var(--active); }
+.hs-loglist .btn .lbl { width: 100%; text-align: left; }
 .hs-legend .hs-pred-toggle { cursor: pointer; padding: .05em .45em; border: 1px solid rgba(126,224,106,.5); border-radius: .8em; opacity: .7; }
 .hs-legend .hs-pred-toggle.on { opacity: 1; background: rgba(126,224,106,.18); }
 .hs-kv .hs-kv-head { opacity: 1; font-weight: bold; margin-top: .3em; grid-column: 1 / -1; }

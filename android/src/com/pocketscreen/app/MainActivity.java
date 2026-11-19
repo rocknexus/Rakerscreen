@@ -153,7 +153,7 @@ public class MainActivity extends Activity {
     static final Pattern HOST = Pattern.compile("^[A-Za-z0-9.-]{1,253}$|^\\[[0-9A-Fa-f:]+\\]$");
     // any file name in Moonraker's logs folder, rotated ones too (klippy.log.2026-11-18, moonraker.log.1, crowsnest.log)
     static final Pattern LOGNAME = Pattern.compile("^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$");
-    static final Pattern CFGNAME = Pattern.compile("^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,63}\\.cfg$");
+    static final Pattern CFGNAME =Pattern.compile("^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,63}\\.cfg$");
     private BroadcastReceiver installReceiver;
 
     interface Progress { void at(long done); }
@@ -415,6 +415,37 @@ public class MainActivity extends Activity {
                     js("window.__pslog && __pslog(" + id + "," + code + "," + JSONObject.quote(new String(out, "UTF-8")) + ")");
                 } catch (Exception e) {
                     js("window.__pslog && __pslog(" + id + ",0," + JSONObject.quote(describe(e)) + ")");
+                } finally { if (c != null) c.disconnect(); }
+            }).start();
+        }
+
+        /** Heat Sync's view of a whole klippy log (current or rotated, any size): the file is streamed and only
+         *  "Start printer at" / "Log rollover at" lines and the heater part of each "Stats" line are kept
+         *  ("Stats 1234.5: extruder: target=200 temp=187.3 pwm=1.000 heater_bed: ..."), at most maxBytes of them
+         *  (the newest). To window.__pslog(id, httpCode, text) like fetchLog. */
+        @JavascriptInterface
+        public void fetchLogHeat(final int id, final String host, final int port, final String name, final String apiKey, final int maxBytes) {
+            String bad = host == null || !HOST.matcher(host).matches() ? "host \"" + host + "\""
+                    : port < 1 || port > 65535 ? "port " + port
+                    : name == null || !LOGNAME.matcher(name).matches() ? "log name \"" + name + "\"" : null;
+            if (bad != null) {
+                js("window.__pslog && __pslog(" + id + ",0," + JSONObject.quote("Invalid log request: " + bad) + ")");
+                return;
+            }
+            final long cap = Math.max(64 * 1024, Math.min(maxBytes, 32 * 1024 * 1024));
+            new Thread(() -> {
+                HttpURLConnection c = null;
+                try {
+                    c = (HttpURLConnection) new URL("http://" + host + ":" + port + "/server/files/logs/" + name).openConnection();
+                    if (apiKey != null && !apiKey.isEmpty()) c.setRequestProperty("X-Api-Key", apiKey);
+                    c.setConnectTimeout(8000);
+                    c.setReadTimeout(30000);
+                    int code = c.getResponseCode();
+                    if (code != 200) { js("window.__pslog && __pslog(" + id + "," + code + ",\"\")"); return; }
+                    String all = HeatLogFilter.filter(new java.io.InputStreamReader(c.getInputStream(), "UTF-8"), cap);
+                    js("window.__pslog && __pslog(" + id + "," + code + "," + JSONObject.quote(all) + ")");
+                } catch (Exception e) {
+                    js("window.__pslog && __pslog(" + id + ",0," + JSONObject.quote(e instanceof java.net.SocketTimeoutException ? "Moonraker stopped answering" : describe(e)) + ")");
                 } finally { if (c != null) c.disconnect(); }
             }).start();
         }

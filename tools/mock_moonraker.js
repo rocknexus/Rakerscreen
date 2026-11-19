@@ -269,7 +269,7 @@ const rpc = {
   "server.webcams.list": () => ({ webcams: [] }),
   "server.files.list": (p) => {
     if ((p.root || "gcodes") !== "logs") return files.map((f) => ({ path: f.filename, modified: f.modified, size: f.size, permissions: "rw" }));
-    return LOG_FILES.map(([name, ageH]) => ({ path: name, modified: Date.now() / 1000 - ageH * 3600, size: Buffer.byteLength(logFileText(name)), permissions: "r" }));
+    return LOG_FILES.map(([name, ageH]) => ({ path: name, modified: Math.round(STARTED / 1000 - ageH * 3600), size: Buffer.byteLength(logFileText(name)), permissions: "r" }));
   },
   "server.files.get_directory": (p) => {
     const base = (p.path || "gcodes").replace(/^gcodes\/?/, "");
@@ -381,6 +381,8 @@ const LOG_FILES = [["klippy.log", 0], ["moonraker.log", 0], ["crowsnest.log", 0.
   ["klippy.log.2026-11-18", 22], ["moonraker.log.1", 26], ["klippy.log.2026-11-17", 46], ["sonar.log", 70]];
 function logFileText(name) {
   if (!LOG_FILES.some(([n]) => n === name)) return null;
+  const rot = name.match(/^klippy\.log\.(\d{4}-\d\d-\d\d)$/);
+  if (rot) return fakeLog("klippy", Math.max(1, Math.floor((Date.now() - new Date(rot[1]).getTime()) / 86400000)));
   if (/^klippy\.log/.test(name)) return fakeLog("klippy");
   if (/^moonraker\.log/.test(name)) return fakeLog("moonraker");
   const t0 = Date.now() - 3600e3;
@@ -389,17 +391,22 @@ function logFileText(name) {
 const configFiles = {
   "printer.cfg": "# mock printer.cfg\n[printer]\nkinematics: cartesian\nmax_velocity: 300\nmax_accel: 3000\n\n[extruder]\nheater_pin: PA1\n\n[heater_bed]\nheater_pin: PA2\n\n#*# <---------------------- SAVE_CONFIG ---------------------->\n#*# [bed_mesh default]\n",
 };
-function fakeLog(kind) {
+/** day > 0: a rotated log from that many days ago, starting with Klipper's rollover header, other heat-ups */
+function fakeLog(kind, day = 0) {
   const lines = [];
   const at = (s) => new Date(STARTED + s * 1000);
   if (kind === "klippy") {
     lines.push("Starting Klippy...", "Args: ['/home/pi/klipper/klippy/klippy.py', '/home/pi/printer_data/config/printer.cfg']", "Git version: 'v0.12.0-420-gmock'");
     lines.push("===== Config file =====", "[printer]", "kinematics = cartesian", "max_velocity = 300", "max_accel = 3000", "=======================");
     lines.push("Loaded MCU 'mcu' 112 commands (v0.12.0 / gcc: (15:10.3-2021.07-4) 10.3.1)", "MCU 'mcu' config: ADC_MAX=4095 BUS_PINS_i2c1=PB6,PB7 CLOCK_FREQ=72000000");
-    const mono0 = 100;
-    lines.push(`Start printer at ${new Date(STARTED - 1900000).toString().slice(0, 24)} (${((STARTED - 1900000) / 1000).toFixed(1)} ${mono0.toFixed(1)})`);
+    const mono0 = 100 + day * 86400;
+    const begin = STARTED - 1900000 - day * 86400000;
+    // time.asctime(): "Tue Nov 18 00:00:00 2026"
+    const asctime = (d) => `${d.toString().slice(0, 10).replace(/ 0(d)$/, "  $1")} ${d.toTimeString().slice(0, 8)} ${d.getFullYear()}`;
+    if (day) lines.push("Git version: 'v0.12.0-420-gmock'", `=============== Log rollover at ${asctime(new Date(begin + 4000))} ===============`);
+    else lines.push(`Start printer at ${new Date(begin).toString().slice(0, 24)} (${(begin / 1000).toFixed(1)} ${mono0.toFixed(1)})`);
     // heaters: full-power first-order heating (τ, ceiling) seen through a lagging sensor, PID-ish hold
-    let seed = 7;
+    let seed = 7 + day * 101;
     const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647 - 0.5; };
     const mk = (tau, tinf, sensTau) => ({ tau, tinf, sensTau, h: 23, s: 23, target: 0, pwm: 0 });
     const bed = mk(170, 118, 14), ext = mk(65, 305, 5);
@@ -410,10 +417,10 @@ function fakeLog(kind) {
       x.s += (x.h - x.s) / x.sensTau;
     };
     for (let i = 0; i < 1900; i++) {
-      if (i === 60) bed.target = 60;
-      if (i === 520) ext.target = 200;
+      if (i === 60) bed.target = day ? 70 + day * 10 : 60;
+      if (i === 520) ext.target = day ? 210 + day * 10 : 200;
       if (i === 1150) { ext.target = 0; bed.target = 0; }
-      if (i === 1420) ext.target = 240;
+      if (i === 1420) ext.target = day ? 180 : 240;
       step(bed); step(ext);
       const t = (mono0 + 5 + i).toFixed(1);
       const hs = (name, x) => `${name}: target=${x.target.toFixed(0)} temp=${(x.s + rnd() * 0.3).toFixed(1)} pwm=${x.pwm.toFixed(3)}`;
