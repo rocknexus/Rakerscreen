@@ -1828,7 +1828,7 @@ Panels.shutdown = class extends Panel {
     const showEstop = !["disconnected", "startup", "shutdown", "error"].includes(this.p.state);
     const estop = Button("emergency", "Emergency Stop", "color2", { onclick: () => app.emergencyStop() });
     const poweroff = Button("shutdown", "Shutdown", "color1", { onclick: () => this.rebootPoweroff("shutdown") });
-    const restart = Button("refresh", "Restart", "color3", { onclick: () => this.rebootPoweroff("reboot") });
+    const restart = Button("refresh", "Restart Klipper", "color3", { onclick: () => this.rebootPoweroff("reboot") });
     const restartKs = Button("refresh", "Restart Rakerscreen", "color3", { onclick: () => location.reload() });
     const lock = Button("lock", "Lock", "color3", { onclick: () => app.lock() });
     const items = [{ w: restartKs, x: 1, y: 0 }, { w: lock, x: 2, y: 0 }, { w: poweroff, x: 1, y: 1 }, { w: restart, x: 2, y: 1 }];
@@ -1839,13 +1839,15 @@ Panels.shutdown = class extends Panel {
   }
   rebootPoweroff(method) {
     const action = Settings.get(`${method}_action`);
-    const run = () => this.mr.call(method === "reboot" ? "machine.reboot" : "machine.shutdown").catch((e) => this.app.popup(`Failed to ${method === "reboot" ? "reboot" : "power off"} host: ${e.message}`));
+    // Restart is a Klipper restart (printer.restart, like RESTART); Shutdown powers off the host
+    const run = () => (method === "reboot" ? this.mr.call("printer.restart") : this.mr.call("machine.shutdown"))
+      .catch((e) => this.app.popup(method === "reboot" ? `Failed to restart Klipper: ${e.message}` : `Failed to power off host: ${e.message}`));
     // power_action_response: skip the dialog unless set to ask, always ask while printing
     if (action && action !== "ask" && !this.p.isPrinting()) { run(); return; }
-    this.app.dialog(method === "reboot" ? "Restart" : "Shutdown", [
+    this.app.dialog(method === "reboot" ? "Restart Klipper" : "Shutdown", [
       { name: "Accept", style: "dialog-primary", cb: run },
       { name: "Cancel", style: "dialog-error" },
-    ], method === "reboot" ? "Are you sure you wish to reboot the system?" : "Are you sure you wish to shutdown the system?");
+    ], method === "reboot" ? "Restart Klipper?\n\nKlipper reloads printer.cfg; a running print is stopped." : "Are you sure you wish to shutdown the system?");
   }
 };
 
@@ -1934,9 +1936,9 @@ const KS_OPTIONS = [
   { key: "shutdown_action", cat: "Behaviour", name: "Shutdown Action", type: "dropdown",
     tip: "Skips the confirmation and shuts down the selected target. Always asks while printing",
     options: [["ask", "Ask (default)"], ["host", "Host"], ["printer", "Printer"], ["both", "Both"]] },
-  { key: "reboot_action", cat: "Behaviour", name: "Restart Action", type: "dropdown",
-    tip: "Skips the confirmation and restarts the selected target. Always asks while printing",
-    options: [["ask", "Ask (default)"], ["host", "Host"], ["printer", "Printer"], ["both", "Both"]] },
+  { key: "reboot_action", cat: "Behaviour", name: "Restart Klipper", type: "dropdown",
+    tip: "Whether Restart Klipper asks first. Always asks while printing",
+    options: [["ask", "Ask (default)"], ["host", "Don't ask"]] },
   { key: "only_heaters", cat: "Appearance", name: "Hide sensors in Temp.", type: "binary", tip: "Show only devices that are able to be set", cb: reloadCb },
   { key: "use_dpms", cat: "Display", name: "Screen DPMS", type: "binary",
     tip: "Enable screen power management\nOn Android this turns the backlight down to minimum while the screen is blanked" },
