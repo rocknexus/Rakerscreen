@@ -120,14 +120,14 @@ html, body {
 .heater-grid .temp { font-variant-numeric: tabular-nums; white-space: nowrap; justify-content: center; }
 .graph_label { border-left: .4em solid transparent; padding-left: .25em; }
 /* temperature panel: extruders and bed as big tiles side by side */
-.heater-tiles { display: grid; gap: .3em; flex: 1 1 auto; min-height: 7em; max-height: 45%; margin: .2em .1em .3em 0; }
+.heater-tiles { display: grid; gap: .3em; flex: 0 0 auto; height: 40%; min-height: 7em; margin: .2em .1em .3em 0; }
 .heater-tile { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .heater-tile > .btn { margin: 0; }
 .heater-tile > .btn:first-child { flex: 1 1 auto; min-height: 0; flex-direction: column; justify-content: center; border-bottom: .3em solid transparent; border-radius: .6em .6em 0 0; }
-.heater-tile > .btn:first-child img { height: 55%; max-height: 4.5em; width: auto; }
+.heater-tile > .btn:first-child img { height: 3.2em; width: 3.2em; flex: 0 0 auto; object-fit: contain; }
 .heater-tile > .btn.graph_label { border-left: 0; padding-left: 0; }
 .heater-tile > .btn.temp { flex: 0 0 auto; min-height: 2.6em; font-size: 1.15em; font-variant-numeric: tabular-nums; white-space: nowrap; justify-content: center; border-radius: 0 0 .6em .6em; background: var(--button-bg, rgba(255,255,255,.06)); }
-canvas.heatergraph { width: 100%; flex: 1 1 auto; min-height: 0; display: block; }
+canvas.heatergraph { width: 100%; flex: 1 1 0; height: 0; min-height: 0; display: block; } /* basis 0: the drawing size never feeds back into the layout */
 
 /* ---------- Keypad ---------- */
 .keypad { display: flex; flex-direction: column; min-height: 0; height: 100%; }
