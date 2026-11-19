@@ -1448,12 +1448,16 @@ Panels.console = class extends Panel {
     this.hideTemp = true;
     this.text = el("div", { class: "console-text scroll" });
     this.entry = el("input", { class: "entry fill", type: "text", placeholder: "G-code", "data-kb": "gcode" }); // caps, stays open after Send
-    this.entry.addEventListener("keydown", (e) => { if (e.key === "Enter") this.send(); });
+    this.entry.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") this.send();
+      else if (e.key === "ArrowUp" || e.key === "ArrowDown") { e.preventDefault(); this.recall(e.key === "ArrowUp" ? -1 : 1); }
+    });
+    this.histPos = null; // index into the history while stepping through it
     const sw = el("div", { class: "switch on", onclick: () => { this.hideTemp = !this.hideTemp; sw.classList.toggle("on", this.hideTemp); this.render(); } });
     // while the keyboard is open (it has its own Send) only the command line is shown, so it keeps its width
     const extras = (n) => { n.classList.add("kb-hide"); return n; };
     const bar = el("div", { class: "console-bar" }, extras(el("span", { style: { whiteSpace: "nowrap", paddingLeft: ".3em" } }, "Hide temp.")), extras(sw),
-      extras(Button("cancel", null, "color2", { side: true, onclick: () => { app.gcodeLog = []; this.render(); } })),
+      extras(Button(null, "Clear", "console-clear", { side: true, onclick: () => { app.gcodeLog = []; this.render(); } })),
       this.entry, extras(Button("resume", "Send", "color3", { side: true, onclick: () => this.send() })));
     this.el.append(this.text, bar);
   }
@@ -1478,11 +1482,26 @@ Panels.console = class extends Panel {
     const cmd = this.entry.value.trim();
     if (!cmd) return;
     this.entry.value = "";
+    const hist = Settings.get("console_history") || [];
+    if (hist[hist.length - 1] !== cmd) hist.push(cmd);
+    Settings.set("console_history", hist.slice(-100));
+    this.histPos = null;
     const entry = { time: new Date(), message: cmd, type: "command" };
     this.app.gcodeLog.push(entry);
     this.text.append(this.fmt(entry));
     this.text.scrollTop = this.text.scrollHeight;
     this.mr.gcode(cmd).catch(() => {});
+  }
+  /** Step through earlier commands: -1 older, +1 newer; past the newest gives back what was being typed. */
+  recall(dir) {
+    const hist = Settings.get("console_history") || [];
+    if (!hist.length) return;
+    if (this.histPos === null) { if (dir > 0) return; this.draft = this.entry.value; this.histPos = hist.length; }
+    this.histPos = Math.max(0, this.histPos + dir);
+    if (this.histPos >= hist.length) { this.histPos = null; this.entry.value = this.draft || ""; }
+    else this.entry.value = hist[this.histPos];
+    const n = this.entry.value.length;
+    try { this.entry.setSelectionRange(n, n); } catch (e) { /* not supported */ }
   }
 };
 

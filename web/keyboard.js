@@ -182,6 +182,7 @@ class VirtualKeyboard {
       return [k1(["1", "2", "3"]), k1(["4", "5", "6"]), k1(["7", "8", "9"]), k1([".", "0", "BS"]), action];
     }
     const bottom = [[this.layer === "letters" ? "SYM" : "ABC", 1.5], [",", 1], ["SPACE", 4], [".", 1], ["ENTER", 2.5]];
+    const history = this.target && this.target.dataset.kb === "gcode" ? [[["UP", 5], ["DOWN", 5]]] : [];
     if (this.layer === "symbols") {
       return [
         k1(VK_DIGITS),
@@ -189,16 +190,18 @@ class VirtualKeyboard {
         k1(["@", "#", "$", "%", "&", "*", "!", "?", "\"", "'"]),
         [...k1(["[", "]", "{", "}", "<", ">", "|", "~"]), ["BS", 1.5]],
         bottom,
+        ...history,
       ];
     }
     const up = this.shift || this.caps;
     const L = (s) => k1(s.split("").map((c) => (up ? c.toUpperCase() : c)));
-    return [k1(VK_DIGITS), L("qwertyuiop"), L("asdfghjkl"), [["SHIFT", 1.5], ...L("zxcvbnm"), ["BS", 1.5]], bottom];
+    const rows = [k1(VK_DIGITS), L("qwertyuiop"), L("asdfghjkl"), [["SHIFT", 1.5], ...L("zxcvbnm"), ["BS", 1.5]], bottom];
+    return [...rows, ...history]; // console: ▲ ▼ step through earlier commands
   }
   label(k) {
     return {
       BS: "⌫", ENTER: this.target && this.target.dataset.kb === "gcode" ? "Send" : "Done", SPACE: "space",
-      SHIFT: this.caps ? "⇪" : "⇧", SYM: "#+=", ABC: "ABC", NEG: "±",
+      SHIFT: this.caps ? "⇪" : "⇧", SYM: "#+=", ABC: "ABC", NEG: "±", UP: "▲  previous", DOWN: "▼  next",
     }[k] ?? k;
   }
   press(k) {
@@ -206,6 +209,11 @@ class VirtualKeyboard {
       case "BS": this.backspace(); return;
       case "ENTER": this.enter(); return;
       case "NEG": this.toggleSign(); return;
+      case "UP": case "DOWN": {
+        const t = this.target;
+        if (t) t.dispatchEvent(new KeyboardEvent("keydown", { key: k === "UP" ? "ArrowUp" : "ArrowDown", bubbles: true, cancelable: true }));
+        return;
+      }
       case "SPACE": this.insert(" "); break;
       case "SHIFT":
         // tap: next letter upper case; tap again: caps lock; again: off
@@ -227,7 +235,7 @@ class VirtualKeyboard {
       const r = el("div", { class: "vk-row" });
       for (const [k, u] of row) {
         const cls = ["vk-key"];
-        if (["SHIFT", "BS", "SYM", "ABC", "NEG"].includes(k)) cls.push("vk-mod");
+        if (["SHIFT", "BS", "SYM", "ABC", "NEG", "UP", "DOWN"].includes(k)) cls.push("vk-mod");
         if (k === "SHIFT" && (this.shift || this.caps)) cls.push("on");
         if (k === "SPACE") cls.push("vk-space");
         if (k === "ENTER") cls.push("vk-enter");

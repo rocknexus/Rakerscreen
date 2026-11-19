@@ -210,6 +210,8 @@ body.kb-open .console-bar .entry { margin: .3em; padding: .5em; }
 .sensor-banner .filament_sensor_empty { background: var(--error); }
 .sensor-banner .filament_sensor_off { opacity: .75; }
 .inc-edit { gap: .4em; cursor: pointer; }
+.btn.console-clear { background: var(--error); color: #fff; font-weight: bold; padding: 0 1.2em; border-radius: .5em; align-self: stretch; min-height: 2.6em; margin: .25em .2em; }
+.btn.console-clear:active { filter: brightness(1.25); }
 .inc-edit img { height: 1.1em; width: 1.1em; opacity: .7; }
 .temp-presets { display: flex; flex-direction: column; gap: .2em; flex: 1 1 auto; padding-right: .2em; }
 .temp-presets .btn { flex: 1 0 3em; max-height: 5em; font-size: 1.1em; }
