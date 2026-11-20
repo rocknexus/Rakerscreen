@@ -289,7 +289,7 @@ const HeatSync = {
   /** Why a test can't start on dev at target, or null. */
   testProblem(app, dev, target) {
     const p = app.printer, now = p.stat(dev, "temperature"), tgt = p.stat(dev, "target");
-    if (this.test && this.test.state === "running") return "A test heat is already running";
+    if ((this.test && this.test.state === "running") || (this.sync && this.sync.state === "running")) return "A test is already running";
     if (p.isPrinting()) return "Not while printing";
     if (!(target > 0)) return "Pick a target temperature";
     if (typeof now !== "number") return "No temperature from this heater";
@@ -356,6 +356,104 @@ const HeatSync = {
     if (T.onEnd) T.onEnd(T);
   },
   cancelTest() { if (this.test && this.test.state === "running") this.endTest(this.test, "cancelled", "Cancelled"); },
+
+  // ------------------------------------------------------------ Sync test: a real heat sync, predicted vs actual
+  /* Plans bed + extruder the way HEAT_SYNC does (the heater that needs longer starts first, the other after the
+     difference, so both should arrive together), runs it, and records when each actually reached its target.
+     Each result goes into a history, so the gap can be watched as the models get better. */
+  SYNC_HIST: "heat_sync_synctests",
+  SYNC_HOLD: 30,
+  SYNC_MAX: 2400,
+  sync: null,
+  /** The plan for bed → bedT and extruder → extT from where they are now: {heaters, arrive} or {problem}. */
+  syncPlan(app, bedT, extT) {
+    const p = app.printer;
+    if ((this.test && this.test.state === "running") || (this.sync && this.sync.state === "running")) return { problem: "A test is already running" };
+    if (p.isPrinting()) return { problem: "Not while printing" };
+    const H = [["bed", "heater_bed", "heater_bed", "Bed", bedT], ["ext", "extruder", "extruder", "Extruder", extT]].map(([key, dev, heater, name, target]) => {
+      const m = this.model(heater), T0 = p.stat(dev, "temperature"), tgt = p.stat(dev, "target");
+      let problem = null;
+      if (!m) problem = `No ${name.toLowerCase()} model yet: record or test-heat it first`;
+      else if (typeof T0 !== "number") problem = `No ${name.toLowerCase()} temperature`;
+      else if (tgt > 0) problem = `The ${name.toLowerCase()} is heating to ${tgt.toFixed(0)}°: turn it off first`;
+      else if (T0 > target - 15) problem = `The ${name.toLowerCase()} needs to start at least 15° below ${target}° (it's ${T0.toFixed(0)}°)`;
+      // to 1° short of the target, the way the test counts a heater as there
+      const pred = problem ? null : this.predict(m, T0, target - 1);
+      if (!problem && pred === null) problem = `${target}° is above the ${name.toLowerCase()}'s full-power ceiling in its model`;
+      return { key, dev, heater, name, target, T0, model: m, pred, problem };
+    });
+    const bad = H.find((h) => h.problem);
+    if (bad) return { problem: bad.problem, heaters: H };
+    const arrive = Math.max(...H.map((h) => h.pred));
+    for (const h of H) { h.startAt = arrive - h.pred; h.predReach = arrive; }
+    return { heaters: H, arrive };
+  },
+  startSync(app, plan, off, label) {
+    const t0 = performance.now() / 1000, wall0 = Date.now() / 1000;
+    const S = { app, label, off, state: "running", started: t0, wall0, arrive: plan.arrive, note: "",
+      heaters: plan.heaters.map((h) => ({ ...h, samples: [], set: false })) };
+    S.take = () => {
+      const now = performance.now() / 1000;
+      for (const h of S.heaters) h.samples.push({ t: now - t0 + 1, wall: wall0 + (now - t0), target: Number(app.printer.stat(h.dev, "target")) || 0,
+        temp: Number(app.printer.stat(h.dev, "temperature")), pwm: Number(app.printer.stat(h.dev, "power")) || 0 });
+    };
+    S.take();
+    S.timer = setInterval(() => this.syncTick(S), 500);
+    this.sync = S;
+    this.syncTick(S); // the heater that starts at 0 starts now
+    return S;
+  },
+  syncTick(S) {
+    if (S.state !== "running") return;
+    const now = performance.now() / 1000, t = now - S.started;
+    S.take();
+    for (const h of S.heaters) {
+      if (!h.set && t >= h.startAt) {
+        h.set = true; h.setAt = t;
+        if (!S.app.setTargetTemp(h.dev, h.target)) { this.endSync(S, "error", `Couldn't set the ${h.name.toLowerCase()} target`); return; }
+      }
+      const last = h.samples[h.samples.length - 1];
+      if (h.set && t - h.setAt > 6 && Math.abs(last.target - h.target) > 0.5) { this.endSync(S, "aborted", `Stopped: the ${h.name.toLowerCase()} target was changed outside the test`); return; }
+      if (h.set && h.reachedAt === undefined && last.temp >= h.target - 1) h.reachedAt = t;
+    }
+    const done = S.heaters.every((h) => h.reachedAt !== undefined);
+    if (done && t - Math.max(...S.heaters.map((h) => h.reachedAt)) >= this.SYNC_HOLD) { this.endSync(S, "done"); return; }
+    if (t > this.SYNC_MAX) { this.endSync(S, "done", "Stopped after 40 minutes"); return; }
+    if (S.onTick) S.onTick(S);
+  },
+  /** done: score it, keep it in the history and record both heat-ups; cancelled / error: heaters off; aborted: left alone. */
+  endSync(S, state, note) {
+    clearInterval(S.timer);
+    S.state = state;
+    if (note) S.note = note;
+    for (const h of S.heaters) if (h.set && ((state === "done" && S.off) || state === "cancelled" || state === "error")) S.app.setTargetTemp(h.dev, 0);
+    if (state === "done") {
+      const [b, e] = S.heaters;
+      S.result = {
+        at: Date.now(), label: S.label, arrive: S.arrive,
+        bed: { T0: b.T0, target: b.target, startAt: b.startAt, pred: b.predReach, actual: b.reachedAt !== undefined ? b.reachedAt : null },
+        ext: { T0: e.T0, target: e.target, startAt: e.startAt, pred: e.predReach, actual: e.reachedAt !== undefined ? e.reachedAt : null },
+      };
+      if (S.result.bed.actual !== null && S.result.ext.actual !== null) S.result.gap = S.result.ext.actual - S.result.bed.actual;
+      const hist = Settings.get(this.SYNC_HIST);
+      Settings.set(this.SYNC_HIST, [...(Array.isArray(hist) ? hist : []), S.result].slice(-30));
+      // both heat-ups go into the record like a Test heat
+      const runs = [];
+      for (const h of S.heaters) {
+        const k = h.samples.findIndex((s) => Math.abs(s.target - h.target) < 0.5);
+        if (k < 1) continue;
+        const samples = h.samples.slice(k - 1).filter((s, i) => i === 0 || Math.abs(s.target - h.target) < 0.5);
+        if (samples.length < 3 || samples[samples.length - 1].t - samples[1].t < 10) continue;
+        const r = this.analyze({ name: h.heater, samples });
+        r.test = true; r.sync = true; r.id = "sync|" + r.id;
+        runs.push(r);
+      }
+      if (runs.length) this.addRuns(runs);
+    }
+    if (S.onEnd) S.onEnd(S);
+  },
+  cancelSync() { if (this.sync && this.sync.state === "running") this.endSync(this.sync, "cancelled", "Cancelled"); },
+  syncHistory() { const h = Settings.get(this.SYNC_HIST); return Array.isArray(h) ? h : []; },
 
   CHANGES: "heat_sync_changes",
   changes(heater) { return (Settings.get(this.CHANGES) || {})[heater] || null; },
@@ -678,66 +776,106 @@ const HeatSync = {
       a second late). Then κ: how d grows with the start temperature, d ≈ κ·(T0 − room), which lets the model predict
       heat-ups from a warm start. Alternates: each run's start with the constants held, then the constants with the
       starts held. onProgress(text) between rounds; resolves with null if fewer than 2 runs can be used. */
-  async fitMany(runs, onProgress = () => {}, curv = true) {
+  async fitMany(runs, onProgress = () => {}, curv = true, fixedBeta = null) {
     const yieldUI = () => new Promise((res) => setTimeout(res, 0));
     const data = runs.map((r) => { const T = this.realCurve(r); return { r, T, n: this.fitLen(r, T.length), d: 0, sh: 0 }; })
       .filter((x) => x.n >= 15 && x.r.target - x.r.T0 >= 10);
     if (data.length < 2) return null;
     const T0s = data.map((x) => x.r.T0), tamb = Math.min(...T0s) < 35 ? Math.min(...T0s) : 25;
+    // τ that changes with the rise: fitted too when the runs span 15°+ of rise
+    const rises = data.map((x) => x.r.target - x.r.T0), useBeta = Math.max(...rises) - Math.min(...rises) >= 15;
+    const dRef = this.median(rises);
+    // warm starts and a τ that changes with the rise can both explain a quick heat-up (warm runs tend to have smaller
+    // rises): with 3+ cold runs spanning 15°+ of rise, take β from the cold runs alone, then hold it for the rest
+    let fixedB = fixedBeta;
+    const coldRuns = data.filter((x) => x.r.T0 - tamb < 5);
+    if (!fixedB && useBeta && coldRuns.length >= 3 && coldRuns.length < data.length) {
+      const cr = coldRuns.map((x) => x.r.target - x.r.T0);
+      if (Math.max(...cr) - Math.min(...cr) >= 15) {
+        const sub = await this.fitMany(coldRuns.map((x) => x.r), (t) => onProgress(`Cold runs first (for τ against the rise): ${t}`), false, null);
+        fixedB = { beta: sub && sub.beta ? sub.beta : 0, from: sub };
+      }
+    }
+    const free = useBeta && !fixedB;
     const sse = (p, x, d = x.d, sh = x.sh) => {
-      const q = { ...p, lag: p.lag + sh };
+      const q = this.at({ ...p, lag: p.lag + sh }, x.r.T0, x.r.target);
       const c = this.curve(q, x.r.T0, Infinity, x.n, x.r.T0 + d);
       let s = 0;
       for (let i = 0; i < x.n; i++) { const e = c.T[i] - x.T[i]; s += e * e; }
       return s / x.n;
     };
     const total = (p) => data.reduce((s, x) => s + sse(p, x), 0) / data.length;
-    const shared = (v) => ({ lag: v[0], tinf: v[1], tau: Math.exp(v[2]), taus: Math.exp(v[3]) });
+    // shared constants: lag, T∞, ln τ, ln τs (and β); the curvature pass adds one more at the end
+    const NB = free ? 5 : 4;
+    const betaOf = (v) => (free ? v[4] : fixedB ? fixedB.beta : 0);
+    const shared = (v) => ({ lag: v[0], tinf: v[1], tau: Math.exp(v[2]), taus: Math.exp(v[3]), ...(betaOf(v) ? { beta: betaOf(v), dRef } : {}) });
+    const vec = (p) => [p.lag, p.tinf, Math.log(p.tau), Math.log(p.taus), ...(free ? [p.beta || 0] : [])];
+    const stepsB = free ? [1, 8, 0.15, 0.3, 0.004] : [1, 8, 0.15, 0.3];
     // start from the median of the cold runs' own fits (all runs' if none started cold)
     const cold = data.filter((x) => x.r.T0 - tamb < 8);
     const own = (cold.length ? cold : data).map((x) => this.fit(x.r, false)).filter(Boolean);
     const med = (k) => this.median(own.map((f) => f[k]));
     let p = own.length ? { lag: med("lag"), tinf: med("tinf"), tau: med("tau"), taus: med("taus") } : { lag: 1, tinf: Math.max(...data.map((x) => x.r.target)) + 60, tau: 150, taus: 10 };
+    // a starting β (and τ at the middle rise) from how the runs' own τ trend with their rise
+    // (cold runs only: a warm run's own fit is off, it starts out of rest)
+    // start from the cold runs' joint fit when there is one (its τ moved to this set's middle rise)
+    if (fixedB && fixedB.from) { const c = fixedB.from; p = { lag: c.lag, tinf: c.tinf, taus: c.taus, tau: c.tau * (c.beta ? Math.exp(c.beta * (dRef - c.dRef)) : 1) }; }
+    if (fixedB && fixedB.beta) { p.beta = fixedB.beta; p.dRef = dRef; }
+    else if (free && cold.length >= 3) {
+      const src = cold, t = { tau: p.tau };
+      this.riseTrend(t, src.map((x) => { const f = this.fit(x.r, false); return [x.r.target - x.r.T0, f ? f.tau : 0]; }));
+      if (t.beta) { p.tau = t.tau * Math.exp(t.beta * (dRef - t.dRef)); p.beta = Math.max(-0.03, Math.min(0.03, t.beta)); p.dRef = dRef; }
+    }
     const maxTarget = Math.max(...data.map((x) => x.r.target));
-    const badShared = (q) => !(q.taus < q.tau * 0.99) || q.tinf <= maxTarget + 0.5 || q.lag < -2 || q.lag > 60;
+    const badShared = (q) => !(q.taus < q.tau * 0.99) || q.tinf <= maxTarget + 0.5 || q.lag < -2 || q.lag > 60 || Math.abs(q.beta || 0) > 0.03;
     for (let round = 0; round < 4; round++) {
       onProgress(`Fitting ${data.length} runs: round ${round + 1} of 4…`);
       await yieldUI();
       // each run's start (heater ahead of the sensor by d, time shift sh), constants held
       for (const x of data) {
         const span = Math.max(5, p.tinf - x.r.T0 - 1);
+        if (x.r.T0 - tamb < 5) { const b = this.nelder((v) => (Math.abs(v[0]) > 1.5 ? 1e12 : sse(p, x, 0, v[0])), [x.sh], [0.5], 60); x.d = 0; x.sh = b.x[0]; continue; } // a cold run starts at rest
         const b = this.nelder((v) => (Math.abs(v[1]) > 1.5 || v[0] < -span || v[0] > span ? 1e12 : sse(p, x, v[0], v[1])), [x.d, x.sh], [3, 0.5], 120);
         x.d = b.x[0]; x.sh = b.x[1];
       }
       await yieldUI();
       // the constants, starts held
-      const a = this.nelder((v) => { const q = shared(v); return badShared(q) ? 1e12 : total(q); },
-        [p.lag, p.tinf, Math.log(p.tau), Math.log(p.taus)], [1, 8, 0.15, 0.3], 400);
+      const cost = (v) => { const q = shared(v); return badShared(q) ? 1e12 : total(q); };
+      let a = this.nelder(cost, vec(p), stepsB, 150 * NB);
+      a = this.nelder(cost, a.x, stepsB.map((v) => v / 2), 100 * NB); // restart: Nelder–Mead can stall
       p = shared(a.x);
     }
     let err = total(p);
+    // keep β only if it clearly helps (RMS down 5 % or more)
+    if (p.beta && free) {
+      const flat = { ...p }; delete flat.beta; delete flat.dRef;
+      const a = this.nelder((v) => { const q = shared([...v, 0]); return badShared(q) ? 1e12 : total(q); }, vec(flat).slice(0, 4), [1, 8, 0.15, 0.3], 400);
+      const pf = shared([...a.x, 0]), ef = total(pf);
+      if (err > ef * 0.95 * 0.95) { p = pf; err = ef; }
+    }
     // loss curvature: the same alternation with the curvature added (searching at 3 steps a second), kept only if it
     // fits clearly better (RMS down 15 % or more) at full resolution; otherwise the runs' starts go back as they were
     if (curv) {
       const A = Math.max(1, p.tinf - tamb);
-      const withQ = (v, sub) => ({ ...shared(v), q: v[4] / (Math.exp(v[2]) * A), sub });
+      const withQ = (v, sub) => ({ ...shared(v), q: v[NB] / (Math.exp(v[2]) * A), sub });
       const keep = data.map((x) => [x.d, x.sh]);
-      let v5 = [p.lag, p.tinf, Math.log(p.tau), Math.log(p.taus), 0];
+      let v5 = [...vec(p), 0];
       for (let round = 0; round < 3; round++) {
         onProgress(`Fitting ${data.length} runs: trying loss curvature (${round + 1} of 3)…`);
         await yieldUI();
-        v5 = this.nelder((v) => { const q = withQ(v, 3); return badShared(q) || v[4] <= -0.9 || v[4] > 4 ? 1e12 : total(q); },
-          v5, [0.5, 5, 0.1, 0.2, 0.3], 250).x;
+        v5 = this.nelder((v) => { const q = withQ(v, 3); return badShared(q) || v[NB] <= -0.9 || v[NB] > 4 ? 1e12 : total(q); },
+          v5, [0.5, 5, 0.1, 0.2, ...(useBeta ? [0.002] : []), 0.3], 250).x;
         const pq3 = withQ(v5, 3);
         for (const x of data) {
           const span = Math.max(5, pq3.tinf - x.r.T0 - 1);
+          if (x.r.T0 - tamb < 5) { const b = this.nelder((v) => (Math.abs(v[0]) > 1.5 ? 1e12 : sse(pq3, x, 0, v[0])), [x.sh], [0.5], 40); x.d = 0; x.sh = b.x[0]; continue; }
           const b = this.nelder((v) => (Math.abs(v[1]) > 1.5 || v[0] < -span || v[0] > span ? 1e12 : sse(pq3, x, v[0], v[1])), [x.d, x.sh], [3, 0.5], 80);
           x.d = b.x[0]; x.sh = b.x[1];
         }
       }
       const pq = withQ(v5), eq = total(pq);
       delete pq.sub;
-      if (eq <= err * 0.85 * 0.85 && Math.abs(v5[4]) >= 0.01) { p = pq; err = eq; }
+      if (eq <= err * 0.85 * 0.85 && Math.abs(v5[NB]) >= 0.01) { p = pq; err = eq; }
       else data.forEach((x, i) => { [x.d, x.sh] = keep[i]; });
     }
     // κ: the start offsets against how warm each run started (through 0: a run from room temperature starts at rest)
@@ -747,7 +885,7 @@ const HeatSync = {
     const out = { ...p, rms: Math.sqrt(err), n: data.length, tamb: Math.round(tamb * 10) / 10 };
     if (Math.abs(kappa) >= 0.01) out.kappa = Math.round(kappa * 1000) / 1000;
     out.perRun = data.map((x) => {
-      const q = { ...p, lag: p.lag + x.sh };
+      const q = this.at({ ...p, lag: p.lag + x.sh }, x.r.T0, x.r.target);
       // to 1° short of the target, the way a real run counts as having reached it
       const c = this.curve(q, x.r.T0, Infinity, Math.max(x.T.length, 3600), x.r.T0 + x.d), reach = c.T.findIndex((v) => v >= x.r.target - 1);
       return { id: x.r.id, T0: x.r.T0, target: x.r.target, d: x.d, sh: x.sh, rms: Math.sqrt(sse(p, x)), reach: reach >= 0 ? reach : null, real: x.r.tReach };
@@ -795,7 +933,7 @@ Panels.heat_sync = class extends Panel {
     this.status = el("span", { class: "hs-status" });
     this.heaterBar = el("div", { class: "hs-heaters" });
     const read = Button("refresh", "Read log", "color1", { side: true, lines: 1, onclick: (e, b) => this.readDialog(b) });
-    const test = Button("heat-up", "Test heat", "color2", { side: true, lines: 1, onclick: () => (HeatSync.test && HeatSync.test.state === "running" ? this.openTest() : this.testDialog()) });
+    const test = Button("heat-up", "Test heat", "color2", { side: true, lines: 1, onclick: () => (HeatSync.sync && HeatSync.sync.state === "running" ? this.openTest("sync") : HeatSync.test && HeatSync.test.state === "running" ? this.openTest("heat") : this.testDialog()) });
     const clear = Button("delete", "Clear", "color2", { side: true, lines: 1, onclick: () => this.app.dialog("Clear Heat Sync", [
       { name: "Clear", style: "dialog-error", cb: () => { HeatSync.save([]); Settings.set(HeatSync.CHANGES, {}); this.sel = null; this.render(); } },
       { name: "Cancel", style: "dialog-default" }], "Forget every recorded heat-up?") });
@@ -974,10 +1112,12 @@ Panels.heat_sync = class extends Panel {
   // ------------------------------------------------------------ Test heat: pick a heater and target, then watch it
   /** prev: the choices so far (coming back from typing a custom target). */
   testDialog(prev) {
+    if (prev ? prev.mode === "sync" : this.testMode === "sync") { this.syncDialog(prev); return; }
     const devs = HeatSync.heaterDevs(this.p);
     if (!devs.length) { this.app.popup("No heaters found", 1); return; }
     const presets = (d) => (d === "heater_bed" ? [50, 60, 80, 100] : d.startsWith("extruder") ? [150, 200, 240] : [50, 80]);
     const label = (d) => (d === "heater_bed" ? "Bed" : prettify(devName(d)));
+    if (prev && !prev.dev) prev = null; // coming from the mode switch: start fresh
     const st = prev ? { ...prev } : { dev: devs.find((d) => HeatSync.logName(d) === this.heater) || devs[0], target: 0, off: true };
     if (!prev) st.target = presets(st.dev)[1] || presets(st.dev)[0];
     const body = el("div", { class: "ss-config" });
@@ -993,6 +1133,7 @@ Panels.heat_sync = class extends Panel {
         Input.number({ title: "Test target", value: st.target, unit: "°C", min: 0, ok: "Set", onSubmit: (x) => this.testDialog({ ...st, target: Math.round(x) }) });
       }, (v) => (v === "other" ? (cur === "other" ? `${st.target}°` : "Other…") : `${v}°`), true);
       body.append(
+        this.testModeRow("heat"),
         el("div", { class: "ss-config-row" }, el("div", { class: "name" }, "Heater"),
           ToggleRow(devs, st.dev, (d) => { st.dev = d; st.target = presets(d)[1] || presets(d)[0]; draw(); }, label, true).el),
         el("div", { class: "ss-config-row" }, el("div", { class: "name" }, `Target · now ${typeof now === "number" ? now.toFixed(0) + "°" : "–"}`), targets.el),
@@ -1010,25 +1151,175 @@ Panels.heat_sync = class extends Panel {
         if (why) { this.app.popup(why, 2); return; }
         HeatSync.startTest(this.app, st.dev, st.target, st.off);
         this.heater = HeatSync.logName(st.dev);
-        this.openTest();
+        this.testMode = "heat";
+        this.openTest("heat");
       } },
       { name: "Cancel", style: "dialog-default" }], body);
   }
-  openTest() {
+  /** The Test heat dialog's mode switch: one heater, or a heat sync of bed + extruder. */
+  testModeRow(mode) {
+    return el("div", { class: "ss-config-row" }, el("div", { class: "name" }, "Test"),
+      ToggleRow(["heat", "sync"], mode, (v) => { if (v === mode) return; this.testMode = v; this.testDialog({ mode: v }); },
+        (v) => (v === "heat" ? "One heater" : "Heat sync (bed + extruder)"), true).el);
+  }
+  /** Sync test: pick a preset (or targets), see the plan, start it. */
+  syncDialog(prev) {
+    const presets = Object.entries(Settings.get("preheat") || {}).filter(([, o]) => typeof o.bed === "number" && typeof o.extruder === "number" && o.bed > 0 && o.extruder > 0);
+    const st = prev && prev.bed ? { ...prev } : { mode: "sync", name: presets[0] ? presets[0][0] : "Custom", bed: presets[0] ? presets[0][1].bed : 60, ext: presets[0] ? presets[0][1].extruder : 200, off: true };
+    const body = el("div", { class: "ss-config" });
+    const draw = () => {
+      body.innerHTML = "";
+      const names = [...presets.map(([n]) => n), "Custom"];
+      const plan = HeatSync.syncPlan(this.app, st.bed, st.ext);
+      const info = el("div", { class: "desc" });
+      if (plan.problem) info.textContent = `⚠ ${plan.problem}`;
+      else {
+        const [b, e] = plan.heaters, first = b.startAt === 0 ? b : e, second = first === b ? e : b;
+        info.textContent = `Bed ${b.T0.toFixed(0)}° → ${st.bed}°: ${fmtSecs(b.pred)} predicted. Extruder ${e.T0.toFixed(0)}° → ${st.ext}°: ${fmtSecs(e.pred)}. `
+          + `${first.name} starts now, ${second.name.toLowerCase()} ${second.startAt < 1 ? "together with it" : "after " + fmtSecs(second.startAt)}; both due at ${fmtSecs(plan.arrive)}. It records when each actually gets there and holds ${HeatSync.SYNC_HOLD} s after both.`;
+      }
+      const last = HeatSync.syncHistory().slice(-1)[0];
+      body.append(
+        this.testModeRow("sync"),
+        el("div", { class: "ss-config-row" }, el("div", { class: "name" }, "Preset"),
+          ToggleRow(names, st.name, (n) => {
+            if (n === "Custom") {
+              Input.number({ title: "Bed target", value: st.bed, unit: "°C", min: 0, ok: "Next", onSubmit: (bv) =>
+                Input.number({ title: "Extruder target", value: st.ext, unit: "°C", min: 0, ok: "Set", onSubmit: (ev) => this.syncDialog({ ...st, name: "Custom", bed: Math.round(bv), ext: Math.round(ev) }) }) });
+              return;
+            }
+            const o = presets.find(([x]) => x === n)[1];
+            st.name = n; st.bed = o.bed; st.ext = o.extruder; draw();
+          }, (n) => (n === "Custom" && st.name === "Custom" ? `${st.bed}° / ${st.ext}°` : n), true).el),
+        el("div", { class: "ss-config-row" }, el("div", { class: "name" }, "When done"),
+          ToggleRow(["off", "keep"], st.off ? "off" : "keep", (v) => { st.off = v === "off"; }, (v) => (v === "off" ? "Turn both off" : "Keep heating"), true).el),
+        info,
+        last ? el("div", { class: "desc" }, `Last sync test: ${last.gap !== undefined ? `arrived ${Math.abs(last.gap).toFixed(0)} s apart` : "didn't finish"} (${new Date(last.at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}).`) : null);
+    };
+    draw();
+    this.app.dialog("Test heat", [
+      { name: "Start", style: "dialog-primary", cb: () => {
+        const plan = HeatSync.syncPlan(this.app, st.bed, st.ext);
+        if (plan.problem) { this.app.popup(plan.problem, 2); return; }
+        HeatSync.startSync(this.app, plan, st.off, st.name === "Custom" ? `${st.bed}° / ${st.ext}°` : st.name);
+        this.testMode = "sync";
+        this.openTest("sync");
+      } },
+      { name: "Cancel", style: "dialog-default" }], body);
+  }
+  /** Sync test screen: live while it runs, then the result and the history. */
+  renderSync() {
+    const S = HeatSync.sync, V = this.tView;
+    if (!S || !V) return;
+    const t = performance.now() / 1000 - S.started;
+    const f = (v, d, u = "") => (typeof v === "number" && isFinite(v) ? `${v.toFixed(d)}${u}` : "–");
+    const signed = (v) => (typeof v === "number" ? `${v >= 0 ? "+" : "−"}${fmtSecs(Math.abs(v))}` : "–");
+    const buttons = [];
+    const card = el("div", { class: "hs-card" });
+    if (S.state === "running") {
+      const kv = [["Elapsed", fmtSecs(t)], ["Both due at", fmtSecs(S.arrive)]];
+      for (const h of S.heaters) {
+        const last = h.samples[h.samples.length - 1] || {};
+        const state = !h.set ? `starts in ${fmtSecs(Math.max(0, h.startAt - t))}` : h.reachedAt !== undefined ? `there at ${fmtSecs(h.reachedAt)} (${signed(h.reachedAt - h.predReach)})` : `heating, ${f(last.pwm * 100, 0, " %")}`;
+        kv.push([h.name, ""], ["Temperature", `${f(last.temp, 1)} → ${h.target} °C`], ["Now", state]);
+      }
+      card.append(el("div", { class: "hs-kv" }, ...kv.flatMap(([k, v]) => (v === "" ? [el("span", { class: "hs-kv-head" }, k), el("b", {}, "")] : [el("span", {}, k), el("b", {}, v)]))));
+      buttons.push(Button("cancel", "Cancel", "color2", { side: true, lines: 1, onclick: () => HeatSync.cancelSync() }));
+    } else {
+      const R = S.result;
+      if (R) {
+        const row = (name, x) => el("tr", {}, el("td", { class: "k" }, name), el("td", {}, `${x.T0.toFixed(0)}° → ${x.target}°`), el("td", {}, fmtSecs(x.startAt)),
+          el("td", {}, fmtSecs(x.pred)), el("td", {}, x.actual !== null ? fmtSecs(x.actual) : "–"), el("td", {}, x.actual !== null ? signed(x.actual - x.pred) : "–"));
+        card.append(
+          el("div", { class: "title" }, R.gap !== undefined ? `Arrived ${Math.abs(R.gap).toFixed(0)} s apart${Math.abs(R.gap) >= 1 ? (R.gap > 0 ? " (bed first)" : " (extruder first)") : ""}` : "Didn't finish"),
+          el("div", { class: "hs-const-wrap" }, el("table", { class: "hs-const" },
+            el("tr", {}, el("th", {}, ""), el("th", {}, "Heat"), el("th", {}, "Start"), el("th", {}, "Predicted"), el("th", {}, "Actual"), el("th", {}, "Off by")),
+            row("Bed", R.bed), row("Extruder", R.ext))),
+          el("div", { class: "desc" }, "Start / Predicted / Actual: seconds from the start of the test. Off by: actual − predicted (+ late, − early). Both heat-ups were added to the recorded runs."));
+      }
+      if (S.note) card.append(el("div", { class: "desc" }, S.note));
+    }
+    // history: the last sync tests, newest first
+    const hist = HeatSync.syncHistory().slice(-8).reverse();
+    const histCard = hist.length ? el("div", { class: "hs-card" }, el("div", { class: "title" }, "Sync tests"),
+      el("div", { class: "hs-const-wrap" }, el("table", { class: "hs-const hs-multi" },
+        el("tr", {}, el("th", {}, "When"), el("th", {}, "Preset"), el("th", {}, "Gap"), el("th", {}, "Bed off"), el("th", {}, "Extr. off")),
+        ...hist.map((x) => el("tr", {}, el("td", { class: "k" }, `${new Date(x.at).toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${new Date(x.at).toTimeString().slice(0, 5)}`),
+          el("td", {}, x.label || ""), el("td", {}, x.gap !== undefined ? `${Math.abs(x.gap).toFixed(0)} s` : "–"),
+          el("td", {}, x.bed.actual !== null ? signed(x.bed.actual - x.bed.pred) : "–"), el("td", {}, x.ext.actual !== null ? signed(x.ext.actual - x.ext.pred) : "–")))))) : null;
+    buttons.push(Button("arrow-left", S.state === "running" ? "Hide" : "Close", "color4", { side: true, lines: 1, onclick: () => this.closeTest() }));
+    const head = S.state === "running" ? `Sync test · ${S.label}` : S.state === "done" ? `Sync test done · ${S.label}` : `Sync test ${S.state === "cancelled" ? "cancelled" : "stopped"} · ${S.label}`;
+    const oldLeft = V.querySelector(".hs-left"), keepScroll = oldLeft ? oldLeft.scrollTop : 0;
+    const canvas = el("canvas", { class: "hs-chart" });
+    V.innerHTML = "";
+    V.append(
+      el("div", { class: "hs-top" }, el("div", { class: "hs-mtitle" }, head), ...buttons),
+      el("div", { class: "hs-body fill" },
+        el("div", { class: "hs-left scroll" }, card, histCard),
+        el("div", { class: "hs-right" },
+          el("div", { class: "hs-legend" }, el("span", {}, el("i", { style: { background: "#f0a028" } }), "Bed"), el("span", {}, el("i", { style: { background: "#35d0e0" } }), "Extruder"),
+            el("span", {}, "dotted: predicted · red line: both due"), el("span", {}, "● reached")),
+          canvas)));
+    const newLeft = V.querySelector(".hs-left");
+    if (newLeft) newLeft.scrollTop = keepScroll;
+    requestAnimationFrame(() => this.drawSync(S, canvas));
+  }
+  /** Both heaters against time since the test started: real (solid), predicted (dotted, from each start), due line. */
+  drawSync(S, c) {
+    const box = c.getBoundingClientRect();
+    if (box.width < 20 || box.height < 20) return;
+    const dpr = window.devicePixelRatio || 1;
+    c.width = box.width * dpr; c.height = box.height * dpr;
+    const g = c.getContext("2d");
+    g.scale(dpr, dpr);
+    const W = box.width, H = box.height, fs = parseFloat(getComputedStyle(document.documentElement).fontSize) * 0.7, text = getComputedStyle(document.body).color;
+    g.clearRect(0, 0, W, H); g.font = `${fs}px sans-serif`;
+    const tNow = S.state === "running" ? performance.now() / 1000 - S.started : Math.max(...S.heaters.flatMap((h) => h.samples.map((x) => x.t - 1)));
+    const span = Math.max(60, tNow, S.arrive * 1.2 + 20);
+    const curves = S.heaters.map((h) => {
+      const n = Math.ceil(span - h.startAt) + 2;
+      const c2 = HeatSync.curve(HeatSync.at(h.model, h.T0, h.target), h.T0, h.target, Math.max(2, n));
+      return { h, pred: c2.T, col: h.key === "bed" ? "#f0a028" : "#35d0e0" };
+    });
+    const all = S.heaters.flatMap((h) => [h.T0, h.target, ...h.samples.map((x) => x.temp).filter(isFinite)]);
+    const lo = Math.min(...all) - 3, hi = Math.max(...all) + 5;
+    const gx = fs * 3.2, gw = W - gx - fs * 0.8, gy = fs * 0.6, gh = H - gy - fs * 2;
+    const X = (t) => gx + (gw * t) / span, Y = (v) => gy + gh - ((v - lo) / (hi - lo)) * gh;
+    g.strokeStyle = "rgba(127,127,127,.35)"; g.lineWidth = 1; g.fillStyle = text; g.textAlign = "right"; g.textBaseline = "middle";
+    for (let k = 0; k <= 4; k++) { const v = lo + ((hi - lo) * k) / 4; g.beginPath(); g.moveTo(gx, Y(v)); g.lineTo(gx + gw, Y(v)); g.stroke(); g.fillText(v.toFixed(0), gx - 4, Y(v)); }
+    // both due
+    g.strokeStyle = "#e53935"; g.setLineDash([6, 4]); g.beginPath(); g.moveTo(X(S.arrive), gy); g.lineTo(X(S.arrive), gy + gh); g.stroke(); g.setLineDash([]);
+    for (const { h, pred, col } of curves) {
+      // target
+      g.strokeStyle = col; g.globalAlpha = 0.35; g.setLineDash([3, 4]); g.beginPath(); g.moveTo(gx, Y(h.target)); g.lineTo(gx + gw, Y(h.target)); g.stroke(); g.globalAlpha = 1;
+      // predicted, from its own start
+      g.lineWidth = 2; g.setLineDash([2, 4]); g.lineCap = "round"; g.beginPath(); g.moveTo(X(0), Y(h.T0)); g.lineTo(X(h.startAt), Y(h.T0));
+      pred.forEach((v, i) => { const t = h.startAt + i; if (t <= span) g.lineTo(X(t), Y(v)); }); g.stroke(); g.setLineDash([]); g.lineCap = "butt";
+      // real
+      g.lineWidth = 2; g.beginPath();
+      h.samples.forEach((x, i) => { const t = x.t - 1; i ? g.lineTo(X(t), Y(x.temp)) : g.moveTo(X(t), Y(x.temp)); }); g.stroke();
+      if (h.reachedAt !== undefined) { g.fillStyle = col; g.beginPath(); g.arc(X(h.reachedAt), Y(h.target - 1), fs * 0.45, 0, Math.PI * 2); g.fill(); }
+    }
+    g.fillStyle = text; g.textAlign = "center"; g.textBaseline = "top";
+    const tick = span > 900 ? 300 : span > 300 ? 60 : span > 120 ? 30 : 10;
+    for (let t = 0; t <= span; t += tick) g.fillText(fmtSecs(t), X(t), H - fs * 1.4);
+  }
+  openTest(mode) {
+    if (mode) this.tMode = mode;
     if (this.mView) this.closeModel();
     if (!this.tView) {
       this.main.style.display = "none";
       this.tView = el("div", { class: "fill hs-model hs-test" });
       this.el.append(this.tView);
     }
-    const T = HeatSync.test;
+    const T = this.tMode === "sync" ? HeatSync.sync : HeatSync.test;
     if (T) { T.onTick = () => this.tView && this.renderTest(); T.onEnd = () => { if (this.tView) this.renderTest(); else this.render(); }; }
     this.renderTest();
     this.app.updateActionBar();
   }
   closeTest() {
     if (this.tView) { this.tView.remove(); this.tView = null; }
-    const T = HeatSync.test;
+    const T = this.tMode === "sync" ? HeatSync.sync : HeatSync.test;
     if (T) { T.onTick = null; T.onEnd = () => this.render(); if (T.state !== "running") T.seen = true; }
     this.main.style.display = "flex";
     this.render();
@@ -1068,6 +1359,7 @@ Panels.heat_sync = class extends Panel {
       el("div", { class: "desc" }, `Curve: measured straight from the heat-up so far. Model: ${src}, for this start temperature.`));
   }
   renderTest() {
+    if (this.tMode === "sync") { this.renderSync(); return; }
     const T = HeatSync.test, V = this.tView;
     if (!T || !V) return;
     const name = T.dev === "heater_bed" ? "Bed" : prettify(devName(T.dev));
@@ -1228,6 +1520,7 @@ Panels.heat_sync = class extends Panel {
       const res = await HeatSync.fitMany(runs, (t) => { this.mNote = t; const d = this.mView && this.mView.querySelector(".hs-model .hs-card .desc"); if (d) d.textContent = t; });
       if (!res) { this.mNote = "Not enough usable heat-ups (each needs 15 s at full power and a 10° rise)"; this.renderModel(); return; }
       const p = { lag: res.lag, tinf: res.tinf, tau: res.tau, taus: res.taus };
+      if (res.beta) { p.beta = res.beta; p.dRef = res.dRef; }
       if (res.q) p.q = res.q;
       if (res.kappa) { p.kappa = res.kappa; p.tamb = res.tamb; }
       this.mp = p;
@@ -1324,8 +1617,10 @@ Panels.heat_sync = class extends Panel {
   }
   activate() {
     // back to a test that's running, or one that finished while you were away
+    const Sy = HeatSync.sync;
+    if (Sy && (Sy.state === "running" || !Sy.seen)) { this.render(); this.openTest("sync"); return; }
     const T = HeatSync.test;
-    if (T && (T.state === "running" || !T.seen)) { this.render(); this.openTest(); return; }
+    if (T && (T.state === "running" || !T.seen)) { this.render(); this.openTest("heat"); return; }
     const runs = HeatSync.load();
     this.status.textContent = runs.length ? `${runs.length} heat-up${runs.length === 1 ? "" : "s"} recorded · Read log adds new ones from klippy.log` : "";
     this.render();
