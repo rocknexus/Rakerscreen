@@ -62,6 +62,31 @@ const HeatSync = {
     return out;
   },
 
+  /** Cool-downs in one heater's samples: switched off (target 0) from hot, at least 60 s and 10° of drop. Starts
+      after the sensor's peak (the heater core is still ahead of it for a few seconds), runs until the heater is
+      switched on again (max an hour). Works on thinned logs (one line per 30 s while everything is off). */
+  findCools(s) {
+    const out = [], x = s.samples;
+    for (let k = 0; k < x.length; k++) {
+      if (x[k].target !== 0 || (k > 0 && x[k - 1].target === 0)) continue;
+      let a = k;
+      while (a + 1 < x.length && x[a + 1].target === 0 && x[a + 1].temp >= x[a].temp) a++;
+      let e = a + 1;
+      while (e < x.length && x[e].target === 0 && x[e].t - x[a].t <= 3600) e++;
+      k = e - 1;
+      const seg = x.slice(a, e);
+      if (seg.length < 3) continue;
+      const t0 = seg[0].t, span = seg[seg.length - 1].t - t0;
+      if (span < 60 || seg[0].temp - seg[seg.length - 1].temp < 10 || seg[0].temp < 45) continue;
+      const stride = Math.max(1, Math.ceil(seg.length / 150));
+      const pts = seg.filter((p, i) => i % stride === 0 || i === seg.length - 1).map((p) => [Math.round((p.t - t0) * 10) / 10, Math.round(p.temp * 10) / 10]);
+      out.push({ heater: s.name, wall: seg[0].wall, T0: seg[0].temp, pts,
+        id: `${s.name}|${seg[0].wall ? Math.round(seg[0].wall) : "m" + Math.round(t0)}` });
+    }
+    return out;
+  },
+  coolsIn(text) { return this.parse(text).flatMap((x) => this.findCools(x)); },
+
   // ------------------------------------------------------------ maths
   /** Even 1 s grid by linear interpolation. */
   resample(samples, key) {
@@ -221,7 +246,7 @@ const HeatSync = {
   load() { const v = Settings.get(this.STORE); return Array.isArray(v) ? v : []; },
   save(runs) { Settings.set(this.STORE, runs); },
   /** Analyse a log and add its heat-ups to the record. Returns {found, added}. */
-  record(text) { return this.addRuns(this.runsIn(text)); },
+  record(text) { const r = this.addRuns(this.runsIn(text)); r.cools = this.addCools(this.coolsIn(text)); return r; },
   /** A whole klippy log (current or rotated) cut down to what Heat Sync reads. In the app this is done natively while
       streaming, so a big day-long log never has to fit in the page; in a browser the full text is fetched. */
   HEAT_LOG_MAX: 12 * 1024 * 1024,
@@ -365,6 +390,78 @@ const HeatSync = {
   SYNC_HOLD: 30,
   SYNC_MAX: 2400,
   sync: null,
+  // ------------------------------------------------------------ cooling
+  /* Switched off, a heater cools towards the room: x = T − room falls as x′ = −x/τc − g·x²/τc (g: losses growing
+     faster than linearly, radiation and the hotend fan). Closed form: x(t) = x0·e / (1 + g·x0·(1 − e)), e = e^(−t/τc).
+     Fitted over all recorded cool-downs of a heater at once, room from its cold starts. */
+  COOL_STORE: "heat_sync_cools",
+  COOL_MAX: 40,
+  loadCools() { const v = Settings.get(this.COOL_STORE); return Array.isArray(v) ? v : []; },
+  /** Add cool-downs (skipping ones already there), newest COOL_MAX per heater. Returns how many were new. */
+  addCools(list) {
+    const have = this.loadCools(), ids = new Set(have.map((c) => c.id));
+    const fresh = list.filter((c) => !ids.has(c.id) && ids.add(c.id));
+    if (!fresh.length) return 0;
+    const by = {};
+    for (const c of [...have, ...fresh]) (by[c.heater] = by[c.heater] || []).push(c);
+    Settings.set(this.COOL_STORE, Object.values(by).flatMap((l) => l.sort((a, b) => (a.wall || 0) - (b.wall || 0)).slice(-this.COOL_MAX)));
+    this._cool = null;
+    return fresh.length;
+  },
+  /** Room temperature for a heater: its coldest recorded start if that's under 35°, else 25°. */
+  roomFor(heater) {
+    const t = this.load().filter((r) => r.heater === heater).map((r) => r.T0);
+    const lo = t.length ? Math.min(...t) : Infinity;
+    return lo < 35 ? lo : 25;
+  },
+  /** Temperature after t s switched off from T (c: a cooling fit; none = stays put). */
+  coolT(c, T, t) {
+    if (!c || !(t > 0) || T <= c.room) return T;
+    const e = Math.exp(-t / c.tau), x0 = T - c.room;
+    return c.room + (x0 * e) / (1 + (c.g || 0) * x0 * (1 - e));
+  },
+  /** One cooling model for a heater's cool-downs: {tau, g, room, n, rms, each: [per cool-down τc]} or null. */
+  fitCools(list, room) {
+    list = list.filter((c) => c.T0 - room > 15 && c.pts.length >= 3);
+    if (!list.length) return null;
+    // each one's own rough τc from its first and last point
+    const each = list.map((c) => { const [t, T] = c.pts[c.pts.length - 1]; const r = (T - room) / (c.T0 - room); return r > 0 && r < 1 ? t / -Math.log(r) : null; });
+    const sse = (tau, g) => {
+      if (!(tau > 1) || g < 0 || g > 0.2) return 1e12;
+      let tot = 0;
+      for (const c of list) { let e = 0; const x0 = c.pts[0][1] - room; for (const [t, T] of c.pts) e += (this.coolT({ tau, g, room }, room + x0, t) - T) ** 2; tot += e / c.pts.length; }
+      return tot / list.length;
+    };
+    const t0 = this.median(each.filter(Boolean)) || 120;
+    const a = this.nelder((v) => sse(Math.exp(v[0]), 0), [Math.log(t0)], [0.3], 120);
+    let best = { tau: Math.exp(a.x[0]), g: 0, rms: Math.sqrt(a.f) };
+    const b = this.nelder((v) => sse(Math.exp(v[0]), v[1] / 100), [a.x[0], 0.3], [0.3, 0.3], 300);
+    if (b.x[1] > 0 && Math.sqrt(b.f) <= best.rms * 0.85) best = { tau: Math.exp(b.x[0]), g: b.x[1] / 100, rms: Math.sqrt(b.f) };
+    return { ...best, room, n: list.length, each: each.map((v) => (v ? Math.round(v) : null)) };
+  },
+  /** The heater's cooling model from its recorded cool-downs (cached until more are added). */
+  cooling(heater) {
+    const room = this.roomFor(heater), key = `${heater}|${room}`;
+    if (!this._cool) this._cool = {};
+    if (!(key in this._cool)) this._cool[key] = this.fitCools(this.loadCools().filter((c) => c.heater === heater), room);
+    return this._cool[key];
+  },
+  /** When to switch each heater on so they all arrive together. hs: [{m, T0, Tt}], heaters off, T0 now.
+      A heater that's still cooling keeps cooling until it's switched on, so it starts lower and takes longer:
+      its start s solves s + predict(T after s of cooling → Tt) = arrive. Sets startAt, Tstart and pred (heating time
+      from Tstart) on each; returns arrive, or null if a target is out of reach. */
+  plan(hs) {
+    for (const h of hs) { h.pred0 = this.predict(h.m, h.T0, h.Tt); if (h.pred0 === null) return null; }
+    const arrive = Math.max(...hs.map((h) => h.pred0));
+    for (const h of hs) {
+      const tot = (t) => { const p = this.predict(h.m, this.coolT(h.m.cool, h.T0, t), h.Tt); return p === null ? Infinity : t + p; };
+      let lo = 0, hi = arrive;
+      if (h.pred0 >= arrive) hi = 0;
+      else for (let i = 0; i < 30; i++) { const mid = (lo + hi) / 2; if (tot(mid) < arrive) lo = mid; else hi = mid; }
+      h.startAt = hi; h.Tstart = this.coolT(h.m.cool, h.T0, hi); h.pred = this.predict(h.m, h.Tstart, h.Tt);
+    }
+    return arrive;
+  },
   /** The plan for bed → bedT and extruder → extT from where they are now: {heaters, arrive} or {problem}. */
   syncPlan(app, bedT, extT) {
     const p = app.printer;
@@ -376,16 +473,21 @@ const HeatSync = {
       if (!m) problem = `No ${name.toLowerCase()} model yet: record or test-heat it first`;
       else if (typeof T0 !== "number") problem = `No ${name.toLowerCase()} temperature`;
       else if (tgt > 0) problem = `The ${name.toLowerCase()} is heating to ${tgt.toFixed(0)}°: turn it off first`;
-      else if (T0 > target - 15) problem = `The ${name.toLowerCase()} needs to start at least 15° below ${target}° (it's ${T0.toFixed(0)}°)`;
+      else if (target >= m.tinf - 0.5) problem = `${target}° is above the ${name.toLowerCase()}'s full-power ceiling in its model`;
       // to 1° short of the target, the way the test counts a heater as there
-      const pred = problem ? null : this.predict(m, T0, target - 1);
-      if (!problem && pred === null) problem = `${target}° is above the ${name.toLowerCase()}'s full-power ceiling in its model`;
-      return { key, dev, heater, name, target, T0, model: m, pred, problem };
+      return { key, dev, heater, name, target, T0, model: m, m, Tt: target - 1, problem };
     });
     const bad = H.find((h) => h.problem);
     if (bad) return { problem: bad.problem, heaters: H };
-    const arrive = Math.max(...H.map((h) => h.pred));
-    for (const h of H) { h.startAt = arrive - h.pred; h.predReach = arrive; }
+    const arrive = this.plan(H);
+    if (arrive === null) return { problem: "A target is above its heater's full-power ceiling", heaters: H };
+    for (const h of H) {
+      h.predReach = arrive;
+      if (h.Tstart > h.target - 15) {
+        const cooled = h.Tstart < h.T0 - 1;
+        return { problem: `The ${h.name.toLowerCase()} needs to start at least 15° below ${h.target}° (${cooled ? `it would only have cooled to ${h.Tstart.toFixed(0)}° by its start` : `it's ${h.T0.toFixed(0)}°`})`, heaters: H };
+      }
+    }
     return { heaters: H, arrive };
   },
   startSync(app, plan, off, label) {
@@ -409,7 +511,7 @@ const HeatSync = {
     S.take();
     for (const h of S.heaters) {
       if (!h.set && t >= h.startAt) {
-        h.set = true; h.setAt = t;
+        h.set = true; h.setAt = t; h.TstartReal = h.samples[h.samples.length - 1].temp;
         if (!S.app.setTargetTemp(h.dev, h.target)) { this.endSync(S, "error", `Couldn't set the ${h.name.toLowerCase()} target`); return; }
       }
       const last = h.samples[h.samples.length - 1];
@@ -431,8 +533,8 @@ const HeatSync = {
       const [b, e] = S.heaters;
       S.result = {
         at: Date.now(), label: S.label, arrive: S.arrive,
-        bed: { T0: b.T0, target: b.target, startAt: b.startAt, pred: b.predReach, actual: b.reachedAt !== undefined ? b.reachedAt : null },
-        ext: { T0: e.T0, target: e.target, startAt: e.startAt, pred: e.predReach, actual: e.reachedAt !== undefined ? e.reachedAt : null },
+        bed: { T0: b.T0, target: b.target, startAt: b.startAt, pred: b.predReach, actual: b.reachedAt !== undefined ? b.reachedAt : null, Tstart: b.Tstart, TstartReal: b.TstartReal },
+        ext: { T0: e.T0, target: e.target, startAt: e.startAt, pred: e.predReach, actual: e.reachedAt !== undefined ? e.reachedAt : null, Tstart: e.Tstart, TstartReal: e.TstartReal },
       };
       if (S.result.bed.actual !== null && S.result.ext.actual !== null) S.result.gap = S.result.ext.actual - S.result.bed.actual;
       const hist = Settings.get(this.SYNC_HIST);
@@ -449,6 +551,7 @@ const HeatSync = {
         runs.push(r);
       }
       if (runs.length) this.addRuns(runs);
+      this.addCools(S.heaters.flatMap((h) => this.findCools({ name: h.heater, samples: h.samples }).map((c) => ({ ...c, id: "sync|" + c.id }))));
     }
     if (S.onEnd) S.onEnd(S);
   },
@@ -511,8 +614,9 @@ const HeatSync = {
   /** The heater's model: a saved one (Model page) if there is one, else the measured one. */
   model(heater) {
     const custom = (Settings.get(this.CUSTOM) || {})[heater];
-    if (custom) return { ...custom, n: 0, custom: true, rmax: this.toVA(custom, custom.tinf - 23).v };
-    return this.measured(heater);
+    const m = custom ? { ...custom, n: 0, custom: true, rmax: this.toVA(custom, custom.tinf - 23).v } : this.measured(heater);
+    if (m) { const c = this.cooling(heater); if (c) m.cool = c; }
+    return m;
   },
 
   /** heat_sync.cfg for Klipper: the models as macro variables and HEAT_SYNC BED= EXTRUDER= [WAIT=1], which starts
@@ -528,7 +632,8 @@ const HeatSync = {
     const vars = (p, m) => [`variable_${p}_lag: ${n(m.lag, 1)}`, `variable_${p}_tau: ${n(m.tau, 1)}`, `variable_${p}_taus: ${n(m.taus || 0, 2)}`, `variable_${p}_tinf: ${n(m.tinf, 1)}`,
       `variable_${p}_q: ${m.q ? String(Number(m.q.toPrecision(4))) : "0"}`,
       `variable_${p}_kappa: ${n(m.kappa || 0, 3)}`, `variable_${p}_room: ${n(m.tamb !== undefined ? m.tamb : 25, 1)}`,
-      `variable_${p}_beta: ${m.beta ? String(Number(m.beta.toPrecision(4))) : "0"}`, `variable_${p}_dref: ${n(m.dRef || 0, 1)}`];
+      `variable_${p}_beta: ${m.beta ? String(Number(m.beta.toPrecision(4))) : "0"}`, `variable_${p}_dref: ${n(m.dRef || 0, 1)}`,
+      `variable_${p}_ctau: ${n(m.cool ? m.cool.tau : 0, 1)}`, `variable_${p}_cg: ${m.cool && m.cool.g ? String(Number(m.cool.g.toPrecision(4))) : "0"}`, `variable_${p}_croom: ${n(m.cool ? m.cool.room : 25, 1)}`];
     return [
       "# heat_sync.cfg, written by Rakerscreen (Settings → Heat Sync → Export) on " + (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${d.toTimeString().slice(0, 5)}`; })(),
       "# Export rewrites this file: change the model in the app, not here.",
@@ -540,6 +645,8 @@ const HeatSync = {
       "#   Starts the heater that needs longer first, then the other, so both arrive together.",
       "#   WAIT=1 (default) also waits for both (M190, M109); WAIT=0 returns once both are on.",
       "#   It dwells (G4) between the two, so nothing else runs meanwhile: use it in a start macro.",
+      "#   A heater that is still cooling (switched off, hot from before) keeps cooling until it starts:",
+      "#   its start is worked out from where it will have cooled to (ctau, cg, croom: 0 ctau = no cooling model).",
       "",
       "[gcode_macro HEAT_SYNC]",
       "description: Heat bed and extruder so both reach temperature at the same time",
@@ -560,25 +667,36 @@ const HeatSync = {
       "    {%- if t <= s0 -%}0{%- elif t >= tinf - 0.5 -%}-1",
       "    {%- else -%}{ [0, l + tau * (ln(tau * (tinf - t0) * (1 + q * tau * (tinf - t)) / ((tau - taus) * (tinf - t) * (1 + q * tau * (tinf - t0))))|float)]|max }{%- endif -%}",
       "  {%- endmacro %}",
+      "  {% macro cool(T, t, room, ctau, cg) -%}",
+      "    {%- if ctau <= 0 or t <= 0 or T <= room -%}{ T }{%- else -%}",
+      "    {%- set e = (ex(-t / ctau / 16)|float) ** 16 -%}{%- set x = T - room -%}",
+      "    { room + x * e / (1 + cg * x * (1 - e)) }{%- endif -%}",
+      "  {%- endmacro %}",
       "  {% set v = printer[\"gcode_macro HEAT_SYNC\"] %}",
+      "  {% set sb = printer.heater_bed.temperature %}",
+      "  {% set se = printer.extruder.temperature %}",
       "  {% set bed = params.BED|default(0)|float %}",
       "  {% set ext = params.EXTRUDER|default(0)|float %}",
       "  {% set wait = params.WAIT|default(1)|int %}",
-      "  {% set tb = secs(v.bed_lag, v.bed_tau, v.bed_taus, v.bed_tinf, v.bed_q, v.bed_kappa, v.bed_room, v.bed_beta, v.bed_dref, printer.heater_bed.temperature, bed)|float %}",
-      "  {% set te = secs(v.extruder_lag, v.extruder_tau, v.extruder_taus, v.extruder_tinf, v.extruder_q, v.extruder_kappa, v.extruder_room, v.extruder_beta, v.extruder_dref, printer.extruder.temperature, ext)|float %}",
+      "  {% set tb = secs(v.bed_lag, v.bed_tau, v.bed_taus, v.bed_tinf, v.bed_q, v.bed_kappa, v.bed_room, v.bed_beta, v.bed_dref, sb, bed)|float %}",
+      "  {% set te = secs(v.extruder_lag, v.extruder_tau, v.extruder_taus, v.extruder_tinf, v.extruder_q, v.extruder_kappa, v.extruder_room, v.extruder_beta, v.extruder_dref, se, ext)|float %}",
       "  {% if tb < 0 or te < 0 %}",
       "    RESPOND TYPE=error MSG=\"HEAT_SYNC: a target is at or above that heater's full-power ceiling, heating both now\"",
       "    M140 S{bed}",
       "    M104 S{ext}",
       "  {% elif tb >= te %}",
-      "    RESPOND MSG=\"HEAT_SYNC: bed first, extruder in {(tb - te)|round(0)|int} s (about {tb|round(0)|int} s to target)\"",
+      "    {% set ns = namespace(d=tb - te) %}",
+      "    {% for i in range(12) %}{% set ns.d = [tb - secs(v.extruder_lag, v.extruder_tau, v.extruder_taus, v.extruder_tinf, v.extruder_q, v.extruder_kappa, v.extruder_room, v.extruder_beta, v.extruder_dref, cool(se, ns.d, v.extruder_croom, v.extruder_ctau, v.extruder_cg)|float, ext)|float, 0]|max %}{% endfor %}",
+      "    RESPOND MSG=\"HEAT_SYNC: bed first, extruder in {ns.d|round(0)|int} s from about {cool(se, ns.d, v.extruder_croom, v.extruder_ctau, v.extruder_cg)|float|round(0)|int} C (about {tb|round(0)|int} s to target)\"",
       "    M140 S{bed}",
-      "    {% if tb - te >= 1 %}G4 P{((tb - te) * 1000)|round(0)|int}{% endif %}",
+      "    {% if ns.d >= 1 %}G4 P{(ns.d * 1000)|round(0)|int}{% endif %}",
       "    M104 S{ext}",
       "  {% else %}",
-      "    RESPOND MSG=\"HEAT_SYNC: extruder first, bed in {(te - tb)|round(0)|int} s (about {te|round(0)|int} s to target)\"",
+      "    {% set ns = namespace(d=te - tb) %}",
+      "    {% for i in range(12) %}{% set ns.d = [te - secs(v.bed_lag, v.bed_tau, v.bed_taus, v.bed_tinf, v.bed_q, v.bed_kappa, v.bed_room, v.bed_beta, v.bed_dref, cool(sb, ns.d, v.bed_croom, v.bed_ctau, v.bed_cg)|float, bed)|float, 0]|max %}{% endfor %}",
+      "    RESPOND MSG=\"HEAT_SYNC: extruder first, bed in {ns.d|round(0)|int} s from about {cool(sb, ns.d, v.bed_croom, v.bed_ctau, v.bed_cg)|float|round(0)|int} C (about {te|round(0)|int} s to target)\"",
       "    M104 S{ext}",
-      "    {% if te - tb >= 1 %}G4 P{((te - tb) * 1000)|round(0)|int}{% endif %}",
+      "    {% if ns.d >= 1 %}G4 P{(ns.d * 1000)|round(0)|int}{% endif %}",
       "    M140 S{bed}",
       "  {% endif %}",
       "  {% if wait %}",
@@ -935,8 +1053,8 @@ Panels.heat_sync = class extends Panel {
     const read = Button("refresh", "Read log", "color1", { side: true, lines: 1, onclick: (e, b) => this.readDialog(b) });
     const test = Button("heat-up", "Test heat", "color2", { side: true, lines: 1, onclick: () => (HeatSync.sync && HeatSync.sync.state === "running" ? this.openTest("sync") : HeatSync.test && HeatSync.test.state === "running" ? this.openTest("heat") : this.testDialog()) });
     const clear = Button("delete", "Clear", "color2", { side: true, lines: 1, onclick: () => this.app.dialog("Clear Heat Sync", [
-      { name: "Clear", style: "dialog-error", cb: () => { HeatSync.save([]); Settings.set(HeatSync.CHANGES, {}); this.sel = null; this.render(); } },
-      { name: "Cancel", style: "dialog-default" }], "Forget every recorded heat-up?") });
+      { name: "Clear", style: "dialog-error", cb: () => { HeatSync.save([]); Settings.set(HeatSync.CHANGES, {}); Settings.set(HeatSync.COOL_STORE, []); HeatSync._cool = null; this.sel = null; this.render(); } },
+      { name: "Cancel", style: "dialog-default" }], "Forget every recorded heat-up and cool-down?") });
     this.left = el("div", { class: "hs-left scroll" });
     this.canvas = el("canvas", { class: "hs-chart" });
     this.info = el("div", { class: "hs-info" });
@@ -1235,6 +1353,8 @@ Panels.heat_sync = class extends Panel {
           el("div", { class: "hs-const-wrap" }, el("table", { class: "hs-const" },
             el("tr", {}, el("th", {}, ""), el("th", {}, "Heat"), el("th", {}, "Start"), el("th", {}, "Predicted"), el("th", {}, "Actual"), el("th", {}, "Off by")),
             row("Bed", R.bed), row("Extruder", R.ext))),
+          ...[["Bed", R.bed], ["Extruder", R.ext]].filter(([, x]) => typeof x.Tstart === "number" && typeof x.TstartReal === "number" && x.T0 - x.Tstart > 2).map(([n, x]) =>
+            el("div", { class: "desc" }, `${n} cooling: ${x.T0.toFixed(0)}° at the start, predicted ${x.Tstart.toFixed(1)}° when switched on, actually ${x.TstartReal.toFixed(1)}° (${x.TstartReal - x.Tstart >= 0 ? "+" : "−"}${Math.abs(x.TstartReal - x.Tstart).toFixed(1)}°)`)),
           el("div", { class: "desc" }, "Start / Predicted / Actual: seconds from the start of the test. Off by: actual − predicted (+ late, − early). Both heat-ups were added to the recorded runs."));
       }
       if (S.note) card.append(el("div", { class: "desc" }, S.note));
@@ -1632,8 +1752,8 @@ Panels.heat_sync = class extends Panel {
     this.status.textContent = "Reading klippy.log…";
     try {
       const text = await fetchMoonrakerLog(this.app, "klippy.log", HeatSync.LOG_BYTES);
-      const { found, added } = HeatSync.record(text);
-      this.status.textContent = `${found} heat-up${found === 1 ? "" : "s"} in the last ${Math.round(text.length / 1024)} KB of klippy.log · ${added} new · ${new Date().toTimeString().slice(0, 5)}`;
+      const { found, added, cools } = HeatSync.record(text);
+      this.status.textContent = `${found} heat-up${found === 1 ? "" : "s"} in the last ${Math.round(text.length / 1024)} KB of klippy.log · ${added} new · ${cools} new cool-downs · ${new Date().toTimeString().slice(0, 5)}`;
       this.sel = null;
       this.render();
     } catch (e) {
@@ -1680,7 +1800,7 @@ Panels.heat_sync = class extends Panel {
   async readLogs(logs, btn) {
     if (!logs.length) { this.app.popup("Nothing picked", 1); return; }
     if (btn) btn.busy(true);
-    const runs = [], failed = [], done = { ...(Settings.get(HeatSync.READ_LOGS) || {}) };
+    const runs = [], cools = [], failed = [], done = { ...(Settings.get(HeatSync.READ_LOGS) || {}) };
     let bytes = 0;
     try {
       for (let i = 0; i < logs.length; i++) {
@@ -1689,13 +1809,13 @@ Panels.heat_sync = class extends Panel {
         try {
           const text = await HeatSync.fetchHeatLog(this.app, x.path);
           bytes += x.size || 0;
-          runs.push(...HeatSync.runsIn(text));
+          for (const ser of HeatSync.parse(text)) { for (const run of HeatSync.findRuns(ser)) runs.push(HeatSync.analyze(run)); cools.push(...HeatSync.findCools(ser)); }
           done[x.path] = x.modified || 0;
         } catch (e) { failed.push(`${x.path}: ${e.message}`); }
       }
       Settings.set(HeatSync.READ_LOGS, done);
-      const { found, added } = HeatSync.addRuns(runs);
-      this.status.textContent = `${found} heat-up${found === 1 ? "" : "s"} in ${logs.length - failed.length} log${logs.length - failed.length === 1 ? "" : "s"} (${fmtBytes(bytes)}) · ${added} new · ${new Date().toTimeString().slice(0, 5)}`;
+      const { found, added } = HeatSync.addRuns(runs), newCools = HeatSync.addCools(cools);
+      this.status.textContent = `${found} heat-up${found === 1 ? "" : "s"} in ${logs.length - failed.length} log${logs.length - failed.length === 1 ? "" : "s"} (${fmtBytes(bytes)}) · ${added} new · ${cools.length} cool-downs, ${newCools} new · ${new Date().toTimeString().slice(0, 5)}`;
       if (failed.length) this.app.popup(`Couldn't read ${failed.join("; ")}`, 2);
       this.sel = null;
       this.render();
@@ -1745,6 +1865,10 @@ Panels.heat_sync = class extends Panel {
         return el("b", {}, el("span", { class: "hs-old" }, fmt(old)), " → ", `${fmt(v)}${u}`,
           el("span", { class: v > old ? "hs-up" : "hs-down" }, ` ${v > old ? "▲" : "▼"}${Math.abs(v - old).toFixed(d)}`));
       };
+      const c = m.cool;
+      const coolRow = el("div", { class: "desc", style: { marginTop: ".3em" } }, c
+        ? `Cooling (switched off): τc ${c.tau.toFixed(0)} s${c.g ? ` · curvature ${(c.g * 100).toFixed(2)} %/°` : ""} · room ${c.room.toFixed(0)}° · ${c.n} cool-down${c.n === 1 ? "" : "s"} · ${c.rms.toFixed(2)} °C RMS`
+        : "Cooling: no cool-downs yet. Read a log where this heater was switched off from hot.");
       card.append(el("div", { class: "title" }, `${this.heater === "heater_bed" ? "Bed" : prettify(this.heater)} ${m.custom ? "saved model (Model page)" : `${m.two ? "two-lag " : ""}model · ${m.n} run${m.n === 1 ? "" : "s"}`}`),
         el("div", { class: "hs-kv" }, ...fields.flatMap(([label, key, d, u]) => [el("span", {}, label), cell(m, key, d, u)])));
       if (ch && ch.after) {
@@ -1758,6 +1882,7 @@ Panels.heat_sync = class extends Panel {
           card.append(el("div", { class: "desc hs-change" }, `${added}, measured model: ${diffs.length ? diffs.join(" · ") : "unchanged"}`));
         } else card.append(el("div", { class: "desc hs-change" }, `${added} · old → new`));
       }
+      card.append(coolRow);
       const presets = Object.entries(Settings.get("preheat") || {});
       const key = this.heater === "heater_bed" ? "bed" : this.heater.startsWith("extruder") ? "extruder" : null;
       if (key && typeof now === "number") {
@@ -1785,12 +1910,13 @@ Panels.heat_sync = class extends Panel {
     if (typeof tb !== "number" || typeof te !== "number") return [];
     const rows = [];
     for (const [name, o] of Object.entries(Settings.get("preheat") || {})) {
-      if (!(o.bed > tb && o.extruder > te)) continue;
-      const b = HeatSync.predict(mb, tb, o.bed), e = HeatSync.predict(me, te, o.extruder);
-      if (b === null || e === null) continue;
-      const d = b - e;
+      if (!(o.bed > tb || o.extruder > te)) continue;
+      const hs = [{ m: mb, T0: tb, Tt: o.bed }, { m: me, T0: te, Tt: o.extruder }];
+      if (HeatSync.plan(hs) === null) continue;
+      const d = hs[1].startAt - hs[0].startAt, late = d > 0 ? hs[1] : hs[0];
+      const from = late.Tstart < late.T0 - 2 ? ` (cooled to ${late.Tstart.toFixed(0)}°)` : "";
       rows.push(el("div", { class: "hs-pred" }, el("span", {}, name),
-        el("b", {}, Math.abs(d) < 3 ? "start together" : d > 0 ? `extruder ${fmtSecs(d)} after bed` : `bed ${fmtSecs(-d)} after extruder`)));
+        el("b", {}, Math.abs(d) < 3 ? "start together" : d > 0 ? `extruder ${fmtSecs(d)} after bed${from}` : `bed ${fmtSecs(-d)} after extruder${from}`)));
     }
     return rows.length ? [el("div", { class: "desc", style: { marginTop: ".4em" } }, "Heat in sync (both arrive together)"), ...rows] : [];
   }
