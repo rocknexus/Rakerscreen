@@ -2,7 +2,7 @@
    title bar), dialogs and popups. Mirrors KlipperScreen screen.py + panels/base_panel.py. */
 "use strict";
 
-const VERSION = "0.4.12-dev";
+const VERSION = "0.4.13-dev";
 
 // Menus translated from KlipperScreen config/main_menu.conf, print_menu.conf, move_menu.conf.
 // Only panels that Rakerscreen implements are listed.
@@ -17,6 +17,7 @@ const MENUS = {
     { key: "main_console", name: "Console", icon: "console", panel: "console" }, // beside Print (also under More)
   ],
   "__main more": [
+    { key: "bedmesh", name: "Bed Mesh", icon: "bed-mesh", panel: "bed_mesh", enable: (p) => p.config_sections.includes("bed_mesh") },
     { key: "zoffset", name: "Z Calibrate", icon: "z-farther", panel: "zcalibrate" },
     { key: "limits", name: "Limits", icon: "gauge-redline", panel: "limits" },
     { key: "fan", name: "Fan", icon: "fan", panel: "fan", enable: (p) => p.fans > 0 },
@@ -658,6 +659,8 @@ class ScreenApp {
   subscriptionObjects() {
     const o = {
       bed_mesh: ["profile_name", "mesh_max", "mesh_min", "probed_matrix", "profiles"],
+      quad_gantry_level: ["applied"],
+      z_tilt: ["applied"],
       configfile: ["config", "warnings", "save_config_pending"],
       display_status: ["progress", "message"],
       fan: ["speed"],

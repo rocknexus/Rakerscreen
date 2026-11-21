@@ -546,3 +546,26 @@ body.kb-open .dialog-body .desc { font-size: .85em; }
 .hs-var .btn { margin: 0; min-height: 0; }
 .hs-var .hs-step { font-size: 1.4em; font-weight: bold; background: var(--active); border-radius: .4em; }
 .hs-var .hs-val { background: rgba(255,255,255,.08); border-radius: .4em; font-variant-numeric: tabular-nums; }
+
+/* Bed Mesh */
+.bm { display: flex; gap: .5em; padding: .4em; box-sizing: border-box; min-height: 0; }
+.bm-left { flex: 3; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.bm-map { flex: 1; min-height: 120px; position: relative; overflow: hidden; }
+.bm-canvas { position: absolute; left: 0; top: 0; }
+.bm-info { font-size: .8em; padding: .3em .2em 0; }
+.bm-head { font-weight: bold; margin-bottom: .2em; }
+.bm-right { flex: 2; display: flex; flex-direction: column; gap: .4em; min-width: 0; min-height: 0; }
+.bm-list { flex: 1; display: flex; flex-direction: column; gap: .3em; min-height: 0; overflow-y: auto; }
+.bm-prof { display: flex; gap: .3em; }
+.bm-prof > .btn:first-child { flex: 1; min-width: 0; text-align: left; }
+.bm-prof > .btn:not(:first-child) { flex: 0 0 3em; }
+.bm-prof.viewing > .btn:first-child { outline: 2px solid var(--active, #4a90d9); }
+.bm-buttons { display: flex; gap: .3em; }
+.bm-buttons > .btn { flex: 1; min-height: 3.2em; }
+@media (orientation: portrait) { .bm { flex-direction: column; } .bm-left { flex: 3; } .bm-right { flex: 2; } }
+.bm .btn { --img: 1.6em; }
+.bm-prof > .btn { min-height: 2.6em; }
+.bm-prof > .btn:not(:first-child) { flex: 0 0 2.6em; }
+.bm-buttons { flex-wrap: wrap; }
+.bm-buttons > .btn { flex: 1 1 4.5em; min-height: 3em; font-size: .85em; }
+.bm-prof .lbl { white-space: pre-line; overflow-wrap: anywhere; }

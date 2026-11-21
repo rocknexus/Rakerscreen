@@ -30,7 +30,7 @@ const config = {
   "gcode_macro PRINT_START": { description: "Start print", gcode: "M190 S{params.BED|default(60)}\nM109 S{params.EXTRUDER|default(200)}" },
   "gcode_macro CLEAN_NOZZLE": { gcode: "G28" },
   "gcode_macro _HIDDEN": { gcode: "M117" },
-  bed_mesh: {}, virtual_sdcard: {}, pause_resume: {}, display_status: {}, exclude_object: {},
+  bed_mesh: { mesh_min: "10, 10", mesh_max: "210, 210", probe_count: "5, 5" }, virtual_sdcard: {}, pause_resume: {}, display_status: {}, exclude_object: {},
 };
 const objects = ["webhooks", "configfile", "gcode_move", "toolhead", "print_stats", "virtual_sdcard", "display_status", "pause_resume",
   "idle_timeout", "motion_report", "exclude_object", "manual_probe", "probe", "bed_mesh", "extruder", "heater_bed",
@@ -146,6 +146,26 @@ function runGcode(script) {
       case "G91": set("gcode_move", { absolute_coordinates: false }); break;
       case "T0": case "M83": case "M82": case "M117": case "": break;
       case "STATUS": respond("// Klipper state: Ready"); break;
+      case "BED_MESH_CALIBRATE": {
+        if (S.toolhead.homed_axes !== "xyz") throw new Error("Must home axis first");
+        const adaptive = arg(line, "ADAPTIVE") === "1", n = adaptive ? 3 : 5, lo = adaptive ? 80 : 10, hi = adaptive ? 140 : 210;
+        const z = Array.from({ length: n }, (_, r) => Array.from({ length: n }, (_, k) => {
+          const x = lo + ((hi - lo) * k) / (n - 1), y = lo + ((hi - lo) * r) / (n - 1), u = (x - 110) / 100, v = (y - 110) / 100;
+          return Math.round((0.12 * (u * u + v * v) - 0.06 * u + 0.04 * v * u - 0.08 + (Math.random() - 0.5) * 0.02) * 1e4) / 1e4; }));
+        const name = adaptive ? "adaptive" : (arg(line, "PROFILE") || "default");
+        const prof = { points: z, mesh_params: { min_x: lo, min_y: lo, max_x: hi, max_y: hi, x_count: n, y_count: n } };
+        set("bed_mesh", { profile_name: name, mesh_min: [lo, lo], mesh_max: [hi, hi], probed_matrix: z, profiles: { ...S.bed_mesh.profiles, [name]: prof } });
+        respond(`// Mesh Bed Leveling Complete
+// Bed Mesh state has been saved to profile [${name}]`); break;
+      }
+      case "BED_MESH_CLEAR": set("bed_mesh", { profile_name: "", mesh_min: [0, 0], mesh_max: [0, 0], probed_matrix: [[]] }); break;
+      case "BED_MESH_PROFILE": {
+        const P = { ...S.bed_mesh.profiles }, ld = arg(line, "LOAD"), sv = arg(line, "SAVE"), rm = arg(line, "REMOVE");
+        if (ld) { const q = P[ld]; if (!q) throw new Error(`bed_mesh: Unknown profile [${ld}]`); const m = q.mesh_params; set("bed_mesh", { profile_name: ld, probed_matrix: q.points, mesh_min: [m.min_x, m.min_y], mesh_max: [m.max_x, m.max_y] }); }
+        if (sv) { P[sv] = { points: S.bed_mesh.probed_matrix, mesh_params: { min_x: S.bed_mesh.mesh_min[0], min_y: S.bed_mesh.mesh_min[1], max_x: S.bed_mesh.mesh_max[0], max_y: S.bed_mesh.mesh_max[1] } }; set("bed_mesh", { profiles: P, profile_name: sv }); }
+        if (rm) { delete P[rm]; set("bed_mesh", { profiles: P }); }
+        break;
+      }
       default:
         if (cmd.startsWith("PID_CALIBRATE") || config[`gcode_macro ${cmd}`]) { respond(`// ran ${line}`); break; }
         respond(`!! Unknown command:"${cmd}"`);
@@ -255,7 +275,7 @@ const rpc = {
   "printer.objects.list": () => ({ objects }),
   "printer.objects.query": (p) => ({ eventtime: Date.now() / 1000, status: pick(p.objects) }),
   "printer.objects.subscribe": (p) => ({ eventtime: Date.now() / 1000, status: pick(p.objects) }),
-  "printer.gcode.help": () => ({ G28: "Home", PROBE_CALIBRATE: "Calibrate probe", Z_ENDSTOP_CALIBRATE: "Calibrate endstop", Z_OFFSET_APPLY_PROBE: "Apply", Z_OFFSET_APPLY_ENDSTOP: "Apply", SAVE_CONFIG: "Save", LOAD_FILAMENT: "Load", UNLOAD_FILAMENT: "Unload", PID_CALIBRATE: "PID" }),
+  "printer.gcode.help": () => ({ G28: "Home", PROBE_CALIBRATE: "Calibrate probe", Z_ENDSTOP_CALIBRATE: "Calibrate endstop", Z_OFFSET_APPLY_PROBE: "Apply", Z_OFFSET_APPLY_ENDSTOP: "Apply", SAVE_CONFIG: "Save", BED_MESH_CALIBRATE: "Mesh", BED_MESH_PROFILE: "Profiles", BED_MESH_CLEAR: "Clear mesh", LOAD_FILAMENT: "Load", UNLOAD_FILAMENT: "Unload", PID_CALIBRATE: "PID" }),
   "printer.gcode.script": (p) => { if (!ready() && !/RESTART/i.test(p.script)) throw new Error("Klippy not ready"); return runGcode(p.script); },
   "printer.emergency_stop": () => { set("webhooks", { state: "shutdown", state_message: "Shutdown due to webhooks request" }); set("print_stats", { state: "error", message: "Emergency stop" }); clearInterval(printTimer); broadcast("notify_klippy_shutdown", []); return "ok"; },
   "printer.restart": () => { restart(); return "ok"; },
