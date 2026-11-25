@@ -193,7 +193,15 @@ function gcodeQueued(script) {
         } else if (cmd === "G0" || cmd === "G1") {
           const d = Math.hypot(...[0, 1, 2].map((i) => S.gcode_move.gcode_position[i] - before[i]));
           const fr = parseFloat(arg(line, "F") || "3000") / 60;
-          if (d > 0) await sleep(Math.min(30000, (d / fr) * 1000));
+          if (d > 0) { // the toolhead's live position travels there over the move's time
+            const to = [...S.gcode_move.gcode_position], ms = Math.min(30000, (d / fr) * 1000), t0 = Date.now();
+            while (Date.now() - t0 < ms) {
+              const k = (Date.now() - t0) / ms;
+              set("motion_report", { live_position: to.map((v, i) => (i < 3 ? before[i] + (v - before[i]) * k : v)) });
+              await sleep(100);
+            }
+            set("motion_report", { live_position: to });
+          }
         }
       }
       return "ok";

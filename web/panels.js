@@ -252,12 +252,24 @@ Panels.move = class extends Panel {
   }
   relayout() { this.build(); this.update({ gcode_move: this.p.stat("gcode_move") || {} }); }
   update(data) {
-    if (!data.gcode_move && !(data.toolhead && data.toolhead.homed_axes !== undefined)) return;
+    if (!data.gcode_move && !data.motion_report && !(data.toolhead && data.toolhead.homed_axes !== undefined)) return;
+    this.showPos();
+  }
+  onInputs() { this.showPos(); }
+  /** Each axis: where the toolhead actually is (live), and, while it differs, where it was asked to go (the last
+      commanded position plus jogs still waiting in the input stack). In G-code coordinates, like the Move-to entry. */
+  showPos() {
     const homed = this.p.stat("toolhead", "homed_axes") || "";
-    const pos = this.p.stat("gcode_move", "gcode_position");
+    const req = this.p.stat("gcode_move", "gcode_position"), live = this.p.stat("motion_report", "live_position");
+    const off = this.p.stat("gcode_move", "homing_origin") || [0, 0, 0];
+    const waiting = { x: 0, y: 0, z: 0 };
+    for (const it of this.app.inputs.items) if (it.type === "move") for (const [a, d] of Object.entries(it.axes)) if (a in waiting) waiting[a] += d;
     ["x", "y", "z"].forEach((a, i) => {
-      if (!homed.includes(a)) this.pos[a].setLabel(`${a.toUpperCase()}: ?`);
-      else if (pos) this.pos[a].setLabel(`${a.toUpperCase()}: ${pos[i].toFixed(2)}`);
+      const b = this.pos[a];
+      if (!homed.includes(a) || !req) { b.setLabel(`${a.toUpperCase()}: ?`); return; }
+      const want = req[i] + waiting[a], now = live ? live[i] - (off[i] || 0) : req[i];
+      const moving = Math.abs(want - now) >= 0.005;
+      b._lbl.replaceChildren(`${a.toUpperCase()}: ${now.toFixed(2)}`, ...(moving ? [el("span", { class: "pos-req" }, `→ ${want.toFixed(2)}`)] : []));
     });
   }
   speedFor(a) {

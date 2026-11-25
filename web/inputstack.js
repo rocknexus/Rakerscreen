@@ -99,6 +99,7 @@ class InputStack {
   }
   clear() { this.items = []; this.render(); }
   render() {
+    for (const e of this.app.stack || []) if (e.panel.onInputs) e.panel.onInputs();
     const c = this.chip;
     c.innerHTML = "";
     if (!this.items.length) { c.classList.remove("show"); return; }
