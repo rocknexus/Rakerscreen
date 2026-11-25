@@ -1670,7 +1670,7 @@ Panels.zcalibrate = class extends Panel {
       start: Button("resume", "Start", "color3", { onclick: () => this.start() }),
       zp: Button("z-farther", "Raise Nozzle", "color4", { onclick: (e, b) => this.gcode(`TESTZ Z=${this.distance}`, b) }),
       zm: Button("z-closer", "Lower Nozzle", "color1", { onclick: (e, b) => this.gcode(`TESTZ Z=-${this.distance}`, b) }),
-      complete: Button("complete", "Accept", "color3", { onclick: (e, b) => this.gcode("ACCEPT", b) }),
+      complete: Button("complete", "Accept", "color3", { onclick: (e, b) => this.accept(b) }),
       cancel: Button("cancel", "Abort", "color2", { onclick: (e, b) => this.gcode("ABORT", b) }),
     };
     if (Settings.get("invert_z")) [this.B.zp, this.B.zm] = [this.B.zm, this.B.zp];
@@ -1713,6 +1713,25 @@ Panels.zcalibrate = class extends Panel {
     };
     if (methods.length === 1) run(methods[0][1]);
     else this.app.dialog("Calibrate", [...methods.map(([n, c]) => ({ name: n, style: "dialog-default", cb: () => run(c) })), { name: "Cancel", style: "dialog-error" }], "Select calibration method");
+  }
+  /** ACCEPT, then say what Klipper took: it answers "probe: z_offset: 1.234" (or "stepper_z: position_endstop: …"),
+      which lives only until a restart, so offer SAVE_CONFIG. No answer in 10 s: say so. */
+  accept(btn) {
+    let done = false;
+    const finish = (text) => {
+      if (done) return;
+      done = true; stop(); clearTimeout(timer);
+      if (!text) { this.app.popup("Accept sent, but Klipper didn't report a new Z offset. Check the console.", 2); return; }
+      const m = text.match(/(\S+): (z_offset|position_endstop): (-?[\d.]+)/);
+      this.app.dialog("Z calibration accepted", [
+        { name: "Save Config", style: "dialog-primary", cb: () => this.gcode("SAVE_CONFIG") },
+        { name: "Later", style: "dialog-default" }],
+        `New ${m[1]} ${m[2]}: ${parseFloat(m[3]).toFixed(3)} mm\n\n` +
+        "It's in use now, but only until Klipper restarts. Save Config writes it to printer.cfg and restarts Klipper.");
+    };
+    const stop = this.app.onResponse((t) => { if (/: (z_offset|position_endstop): -?[\d.]+/.test(t)) finish(t); else if (t.startsWith("!! ")) { done = true; stop(); clearTimeout(timer); } });
+    const timer = setTimeout(() => finish(null), 10000);
+    this.gcode("ACCEPT", btn);
   }
   /** zcalibrate.py _get_calibration_location: zero reference, safe_z_home, round-bed origin, mesh centre or bed centre. */
   location(applyProbeOffset) {

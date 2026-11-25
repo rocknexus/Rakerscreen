@@ -2,7 +2,7 @@
    title bar), dialogs and popups. Mirrors KlipperScreen screen.py + panels/base_panel.py. */
 "use strict";
 
-const VERSION = "0.4.15-dev";
+const VERSION = "0.4.16-dev";
 
 // Menus translated from KlipperScreen config/main_menu.conf, print_menu.conf, move_menu.conf.
 // Only panels that Rakerscreen implements are listed.
@@ -483,6 +483,12 @@ class ScreenApp {
       buttons: [{ name: "Default", style: "dialog-warning", cb: () => { save(null); this.popup(`${set.name}: back to ${set.def.join(", ")}`, 1); } }],
     });
   }
+  /** Call fn(text) for every G-code response until the returned function is called. */
+  onResponse(fn) {
+    if (!this.responseListeners) this.responseListeners = new Set();
+    this.responseListeners.add(fn);
+    return () => this.responseListeners.delete(fn);
+  }
   confirmSave() {
     this.confirmSendAction("Save configuration?\n\nKlipper will reboot", "printer.gcode.script", { script: "SAVE_CONFIG" });
   }
@@ -751,6 +757,7 @@ class ScreenApp {
         const text = params[0] || "";
         this.gcodeLog.push({ time: new Date(), message: text, type: "response" });
         if (this.gcodeLog.length > 500) this.gcodeLog.shift();
+        for (const fn of [...(this.responseListeners || [])]) { try { fn(text); } catch (err) { console.error(err); } }
         if (text.startsWith("!! ")) this.popup(text.slice(3), 3);
         else if (text.startsWith("echo: ") && !text.startsWith("echo: action:")) this.logNotification(text.slice(6), 1);
         if (text.startsWith("// action:")) this.processAction(text.slice(10).trim());
