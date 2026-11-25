@@ -175,37 +175,47 @@ function runGcode(script) {
   return "ok";
 }
 
-// Like Klipper: scripts run one at a time; M109/M190 wait for the temperature and moves take their time, with
-// idle_timeout "Printing" while anything runs (so the app sees Klipper busy)
+// Like Klipper: scripts run one at a time; M109/M190 wait for the temperature (the request stays open), while moves
+// are answered as soon as they're queued and then play out back to back; idle_timeout "Printing" while anything runs
 let gq = Promise.resolve(), gBusy = 0;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const motion = { segs: [], end: 0 }; // queued moves: {from, to, t0, t1} in ms
+function livePos(now) {
+  while (motion.segs.length && motion.segs[0].t1 <= now) { set("motion_report", { live_position: motion.segs[0].to }); motion.segs.shift(); }
+  const s = motion.segs[0];
+  if (s && now > s.t0) { const k = (now - s.t0) / (s.t1 - s.t0); set("motion_report", { live_position: s.to.map((v, i) => (i < 3 ? s.from[i] + (v - s.from[i]) * k : v)) }); }
+}
+setInterval(() => {
+  const now = Date.now();
+  livePos(now);
+  if (!gBusy && motion.end <= now && S.idle_timeout.state === "Printing") set("idle_timeout", { state: "Ready" });
+}, 100);
 function gcodeQueued(script) {
   const job = gq.then(async () => {
     gBusy++; set("idle_timeout", { state: "Printing" });
     try {
       for (const raw of script.split("\n")) {
         const line = raw.trim(), cmd = line.split(/\s+/)[0].toUpperCase();
-        const before = [...S.gcode_move.gcode_position];
+        const before = [...S.gcode_move.gcode_position], live = [...S.motion_report.live_position];
         runGcode(line);
         if (cmd === "M109" || cmd === "M190") {
           const h = cmd === "M109" ? "extruder" : "heater_bed", t0 = Date.now();
           while (S[h].target > 0 && S[h].temperature < S[h].target - 1 && Date.now() - t0 < 20 * 60000) await sleep(250);
         } else if (cmd === "G0" || cmd === "G1") {
-          const d = Math.hypot(...[0, 1, 2].map((i) => S.gcode_move.gcode_position[i] - before[i]));
-          const fr = parseFloat(arg(line, "F") || "3000") / 60;
-          if (d > 0) { // the toolhead's live position travels there over the move's time
-            const to = [...S.gcode_move.gcode_position], ms = Math.min(30000, (d / fr) * 1000), t0 = Date.now();
-            while (Date.now() - t0 < ms) {
-              const k = (Date.now() - t0) / ms;
-              set("motion_report", { live_position: to.map((v, i) => (i < 3 ? before[i] + (v - before[i]) * k : v)) });
-              await sleep(100);
-            }
-            set("motion_report", { live_position: to });
+          const to = [...S.gcode_move.gcode_position], d = Math.hypot(...[0, 1, 2].map((i) => to[i] - before[i]));
+          set("motion_report", { live_position: live }); // runGcode jumped it; it travels there instead
+          if (d > 0) {
+            const t0 = Math.max(Date.now(), motion.end), t1 = t0 + Math.min(30000, (d / (parseFloat(arg(line, "F") || "3000") / 60)) * 1000);
+            motion.segs.push({ from: before, to, t0, t1 });
+            motion.end = t1;
           }
+        } else if (cmd === "G28" || cmd === "M400") {
+          while (motion.end > Date.now()) await sleep(50);
         }
       }
+      await sleep(30); // a round trip's worth
       return "ok";
-    } finally { if (--gBusy === 0) setTimeout(() => { if (!gBusy) set("idle_timeout", { state: "Ready" }); }, 300); }
+    } finally { gBusy--; }
   });
   gq = job.catch(() => {});
   return job;

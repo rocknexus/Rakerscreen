@@ -1,11 +1,13 @@
-/* Input stacking. While Klipper is busy (a move or a heat-up running, or our last command still out), taps are held
-   here and merged as they come in, then sent as one script the moment Klipper is free:
+/* Input stacking. While our last command is still out (Klipper answers a move as soon as it's queued, but not a
+   heat-up wait or a homing until they're done), taps are held here and merged as they come in, then sent as one
+   script the moment the answer comes. Moves aren't held until the toolhead stops: Klipper's look-ahead joins
+   queued jogs, so tapping fast keeps it moving until the taps stop.
      move     jogs add up per axis (opposite taps cancel out)
      extrude  extrusions at the same speed add up
      zadj     Z offset steps add up
      set      a value (temperature, fan, speed factor, ...) keeps only the latest, in the place of the first
      raw      anything else, kept as is and in order (moves and steps don't merge across it)
-   During a print Klipper runs our commands between file lines, so only our own unfinished command holds things. */
+   A wait started elsewhere (a macro, the printer's own screen) holds our first command in Klipper, so the rest stack. */
 "use strict";
 
 class InputStack {
@@ -15,15 +17,10 @@ class InputStack {
     this.out = 0; // scripts sent and not finished yet
     this.chip = el("div", { id: "inputstack" });
     document.body.append(this.chip);
-    setInterval(() => this.flush(), 400); // safety net besides status updates
   }
   get p() { return this.app.printer; }
-  /** Klipper is busy with something: a move or a wait (idle_timeout says Printing), unless that's a print. */
-  busy() {
-    if (this.out > 0) return true;
-    if (this.p.stat("print_stats", "state") === "printing") return false;
-    return this.p.stat("idle_timeout", "state") === "Printing";
-  }
+  /** Our last command hasn't been answered yet. */
+  busy() { return this.out > 0; }
   /** Add an input. item: {type, ...}; btn flashes to show the tap was taken. */
   add(item, btn) {
     if (btn && item.type !== "raw") { btn.classList.remove("stacked"); void btn.offsetWidth; btn.classList.add("stacked"); }
