@@ -175,6 +175,34 @@ function runGcode(script) {
   return "ok";
 }
 
+// Like Klipper: scripts run one at a time; M109/M190 wait for the temperature and moves take their time, with
+// idle_timeout "Printing" while anything runs (so the app sees Klipper busy)
+let gq = Promise.resolve(), gBusy = 0;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function gcodeQueued(script) {
+  const job = gq.then(async () => {
+    gBusy++; set("idle_timeout", { state: "Printing" });
+    try {
+      for (const raw of script.split("\n")) {
+        const line = raw.trim(), cmd = line.split(/\s+/)[0].toUpperCase();
+        const before = [...S.gcode_move.gcode_position];
+        runGcode(line);
+        if (cmd === "M109" || cmd === "M190") {
+          const h = cmd === "M109" ? "extruder" : "heater_bed", t0 = Date.now();
+          while (S[h].target > 0 && S[h].temperature < S[h].target - 1 && Date.now() - t0 < 20 * 60000) await sleep(250);
+        } else if (cmd === "G0" || cmd === "G1") {
+          const d = Math.hypot(...[0, 1, 2].map((i) => S.gcode_move.gcode_position[i] - before[i]));
+          const fr = parseFloat(arg(line, "F") || "3000") / 60;
+          if (d > 0) await sleep(Math.min(30000, (d / fr) * 1000));
+        }
+      }
+      return "ok";
+    } finally { if (--gBusy === 0) setTimeout(() => { if (!gBusy) set("idle_timeout", { state: "Ready" }); }, 300); }
+  });
+  gq = job.catch(() => {});
+  return job;
+}
+
 function restart() {
   set("webhooks", { state: "startup", state_message: "Klipper restarting" });
   broadcast("notify_klippy_disconnected", []);
@@ -276,7 +304,7 @@ const rpc = {
   "printer.objects.query": (p) => ({ eventtime: Date.now() / 1000, status: pick(p.objects) }),
   "printer.objects.subscribe": (p) => ({ eventtime: Date.now() / 1000, status: pick(p.objects) }),
   "printer.gcode.help": () => ({ G28: "Home", PROBE_CALIBRATE: "Calibrate probe", Z_ENDSTOP_CALIBRATE: "Calibrate endstop", Z_OFFSET_APPLY_PROBE: "Apply", Z_OFFSET_APPLY_ENDSTOP: "Apply", SAVE_CONFIG: "Save", BED_MESH_CALIBRATE: "Mesh", BED_MESH_PROFILE: "Profiles", BED_MESH_CLEAR: "Clear mesh", LOAD_FILAMENT: "Load", UNLOAD_FILAMENT: "Unload", PID_CALIBRATE: "PID" }),
-  "printer.gcode.script": (p) => { if (!ready() && !/RESTART/i.test(p.script)) throw new Error("Klippy not ready"); return runGcode(p.script); },
+  "printer.gcode.script": (p) => { if (!ready() && !/RESTART/i.test(p.script)) throw new Error("Klippy not ready"); return gcodeQueued(p.script); },
   "printer.emergency_stop": () => { set("webhooks", { state: "shutdown", state_message: "Shutdown due to webhooks request" }); set("print_stats", { state: "error", message: "Emergency stop" }); clearInterval(printTimer); broadcast("notify_klippy_shutdown", []); return "ok"; },
   "printer.restart": () => { restart(); return "ok"; },
   "printer.firmware_restart": () => { restart(); return "ok"; },
@@ -356,8 +384,15 @@ function handle(client, text) {
   let reply;
   if (!fn) reply = { jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: `Method not found: ${msg.method}` } };
   else {
-    try { reply = { jsonrpc: "2.0", id: msg.id, result: fn(msg.params || {}) }; }
-    catch (e) { reply = { jsonrpc: "2.0", id: msg.id, error: { code: 400, message: e.message } }; }
+    try {
+      const r = fn(msg.params || {});
+      if (r && typeof r.then === "function") {
+        r.then((v) => client.send(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: v })), (e) => client.send(JSON.stringify({ jsonrpc: "2.0", id: msg.id, error: { code: 400, message: e.message } })));
+        console.log(`[rpc] ${msg.method} ${msg.params && msg.params.script ? JSON.stringify(msg.params.script) : ""}`);
+        return;
+      }
+      reply = { jsonrpc: "2.0", id: msg.id, result: r };
+    } catch (e) { reply = { jsonrpc: "2.0", id: msg.id, error: { code: 400, message: e.message } }; }
   }
   if (msg.method !== "printer.objects.query") console.log(`[rpc] ${msg.method} ${msg.params && msg.params.script ? JSON.stringify(msg.params.script) : ""}${reply.error ? " -> " + reply.error.message : ""}`);
   client.send(JSON.stringify(reply));

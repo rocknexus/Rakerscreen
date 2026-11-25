@@ -12,7 +12,10 @@ class Panel {
     this.el = el("div", { class: "panel" });
   }
   get vertical() { return this.app.vertical; }
-  gcode(script, btn) { return this.app.sendAction("printer.gcode.script", { script }, btn); }
+  /** Through the input stack: held while Klipper is busy, then sent with whatever else was tapped meanwhile. */
+  gcode(script, btn) { this.app.inputs.add({ type: "raw", script, btn }); }
+  /** A value where only the latest matters (temperature, fan, factor): replaces one still waiting. */
+  setValue(key, script, label, btn) { this.app.inputs.add({ type: "set", key, script, label }, btn); }
 }
 
 // ================================================================= splash_screen.py
@@ -298,9 +301,7 @@ Panels.move = class extends Panel {
     const a = axis.toLowerCase();
     if (Settings.get(`invert_${a}`) && a !== "z") dir = dir === "+" ? "-" : "+";
     const speed = this.speedFor(a);
-    let script = `G91\nG0 ${a}${dir}${this.distance} F${speed}`;
-    if (this.p.stat("gcode_move", "absolute_coordinates")) script += "\nG90";
-    this.gcode(script, btn);
+    this.app.inputs.add({ type: "move", axes: { [a]: (dir === "-" ? -1 : 1) * parseFloat(this.distance) }, f: speed }, btn);
   }
   home() {
     if ((this.p.configSection("printer").kinematics || "").includes("delta")) { this.gcode("G28"); return; }
@@ -562,8 +563,7 @@ Panels.extrude = class extends Panel {
     const min = parseFloat(this.p.configSection(ext).min_extrude_temp || "170");
     const pre = temp < min && target > min ? `M109 S${target}\n` : "";
     if (method === "extrude") {
-      this.mr.gcode("M83").catch(() => {});
-      this.gcode(`${pre}G1 E${dir}${this.distance} F${Math.round(this.speed * 60)}`, btn);
+      this.app.inputs.add({ type: "extrude", e: (dir === "-" ? -1 : 1) * parseFloat(this.distance), f: Math.round(this.speed * 60), pre }, btn);
     } else if (dir === "-") {
       if (!this.unloadMacro) this.app.popup("Macro UNLOAD_FILAMENT not found");
       else this.gcode(`${pre}UNLOAD_FILAMENT SPEED=${Math.round(this.speed * 60)}`, btn);
@@ -613,8 +613,8 @@ Panels.fan = class extends Panel {
     }
   }
   setSpeed(fan, v) {
-    if (fan === "fan") this.mr.gcode(`M106 S${(v * 2.55).toFixed(0)}`).catch(() => {});
-    else this.mr.gcode(`SET_FAN_SPEED FAN=${fan.split(" ")[1]} SPEED=${v / 100}`).catch(() => {});
+    const name = fan === "fan" ? "Fan" : fan.split(" ")[1];
+    this.setValue(`fan:${fan}`, fan === "fan" ? `M106 S${(v * 2.55).toFixed(0)}` : `SET_FAN_SPEED FAN=${fan.split(" ")[1]} SPEED=${v / 100}`, `${name} ${v}%`);
     setTimeout(() => this.update({ [fan]: {} }), 1000);
   }
 };
@@ -1589,20 +1589,20 @@ Panels.fine_tune = class extends Panel {
     if (gm.speed_factor !== undefined) { this.speed = Math.round(gm.speed_factor * 100); this.L.speedfactor.setLabel(`  ${String(this.speed).padStart(3)}%`); }
   }
   baby(dir, b) {
-    if (dir === "reset") { this.L.zoffset.setLabel("  0.00mm"); this.gcode("SET_GCODE_OFFSET Z=0 MOVE=1", b); return; }
+    if (dir === "reset") { this.L.zoffset.setLabel("  0.00mm"); this.app.inputs.add({ type: "set", key: "zoffset", script: "SET_GCODE_OFFSET Z=0 MOVE=1", label: "Z offset 0", drops: ["zadj"] }, b); return; }
     this.zOffset += (dir === "+" ? 1 : -1) * parseFloat(this.zDelta);
     this.L.zoffset.setLabel(`  ${this.zOffset.toFixed(3)}mm`);
-    this.gcode(`SET_GCODE_OFFSET Z_ADJUST=${dir}${this.zDelta} MOVE=1`, b);
+    this.app.inputs.add({ type: "zadj", dz: (dir === "-" ? -1 : 1) * parseFloat(this.zDelta) }, b);
   }
   changeSpeed(dir, b) {
     this.speed = dir === "reset" ? 100 : Math.max(1, this.speed + (dir === "+" ? 1 : -1) * parseInt(this.sDelta));
     this.L.speedfactor.setLabel(`  ${String(this.speed).padStart(3)}%`);
-    this.gcode(`M220 S${this.speed}`, b);
+    this.setValue("speed", `M220 S${this.speed}`, `Speed ${this.speed}%`, b);
   }
   changeExt(dir, b) {
     this.extrusion = dir === "reset" ? 100 : Math.max(1, this.extrusion + (dir === "+" ? 1 : -1) * parseInt(this.eDelta));
     this.L.extrudefactor.setLabel(`  ${String(this.extrusion).padStart(3)}%`);
-    this.gcode(`M221 S${this.extrusion}`, b);
+    this.setValue("flow", `M221 S${this.extrusion}`, `Flow ${this.extrusion}%`, b);
   }
 };
 
@@ -1630,8 +1630,8 @@ Panels.limits = class extends Panel {
         scale.value = v; scale.style.setProperty("--pct", `${Math.min(100, (v / o.max) * 100)}%`); val.textContent = `${v.toFixed(o.step < 1 ? 2 : 0)}`;
       };
       scale.addEventListener("input", () => { paint(scale.value); o.drag = true; });
-      scale.addEventListener("change", () => { o.drag = false; this.gcode(`SET_VELOCITY_LIMIT ${o.cmd}=${scale.value}`); });
-      const reset = Button("refresh", "Reset", "color1", { side: true, onclick: () => { paint(o.def); this.gcode(`SET_VELOCITY_LIMIT ${o.cmd}=${o.def}`); } });
+      scale.addEventListener("change", () => { o.drag = false; this.setValue(`vel:${o.cmd}`, `SET_VELOCITY_LIMIT ${o.cmd}=${scale.value}`, `${o.cmd} ${scale.value}`); });
+      const reset = Button("refresh", "Reset", "color1", { side: true, onclick: () => { paint(o.def); this.setValue(`vel:${o.cmd}`, `SET_VELOCITY_LIMIT ${o.cmd}=${o.def}`, `${o.cmd} ${o.def}`); } });
       reset.style.flex = "0 0 auto";
       Object.assign(o, { paint });
       list.append(el("div", { class: "fan-row" }, el("div", { class: "name" }, `${o.name}${o.units ? " (" + o.units + ")" : ""}`), el("div", { class: "ctl" }, scale, val, reset)));
@@ -1646,7 +1646,7 @@ Panels.limits = class extends Panel {
       title: o.name, value: typeof cur === "number" ? Math.round(cur * 100) / 100 : o.def, unit: o.units || undefined, ok: "Set",
       min: 0, max: ratio ? 0.99 : undefined, decimals: o.step < 1 ? 2 : 0, keepOpen: true, // Set applies, Close leaves
       desc: `Printer config: ${o.def}${o.units ? " " + o.units : ""}`,
-      onSubmit: (v) => { o.paint(v); this.gcode(`SET_VELOCITY_LIMIT ${o.cmd}=${v}`); },
+      onSubmit: (v) => { o.paint(v); this.setValue(`vel:${o.cmd}`, `SET_VELOCITY_LIMIT ${o.cmd}=${v}`, `${o.cmd} ${v}`); },
     });
   }
   update(data) {
@@ -2123,7 +2123,7 @@ Panels.led = class extends Panel {
   send(led) {
     const r = this.rows[led];
     const parts = r.chans.map((c) => `${c}=${(parseInt(r.sliders[c].s.value) / 255).toFixed(3)}`);
-    this.gcode(`SET_LED LED="${r.name}" ${parts.join(" ")} SYNC=0 TRANSMIT=1`);
+    this.setValue(`led:${r.name}`, `SET_LED LED="${r.name}" ${parts.join(" ")} SYNC=0 TRANSMIT=1`, `LED ${r.name}`);
   }
   update(data) {
     for (const [led, r] of Object.entries(this.rows)) {

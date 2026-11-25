@@ -2,7 +2,7 @@
    title bar), dialogs and popups. Mirrors KlipperScreen screen.py + panels/base_panel.py. */
 "use strict";
 
-const VERSION = "0.4.14-dev";
+const VERSION = "0.4.15-dev";
 
 // Menus translated from KlipperScreen config/main_menu.conf, print_menu.conf, move_menu.conf.
 // Only panels that Rakerscreen implements are listed.
@@ -63,6 +63,7 @@ class ScreenApp {
   constructor() {
     this.mr = new Moonraker();
     this.printer = new Printer();
+    this.inputs = new InputStack(this);
     this.stack = [];
     this.notifications = [];
     this.gcodeLog = [];
@@ -740,6 +741,7 @@ class ScreenApp {
       case "notify_status_update": {
         const data = params[0] || {};
         this.printer.update(data);
+        this.inputs.flush();
         this.updateTitlebarTemps();
         if (data.toolhead && data.toolhead.extruder) { this.titlebarPopulated = false; this.populateTitlebar(); }
         for (const e of this.stack) if (e.panel.update) { try { e.panel.update(data); } catch (err) { console.error(err); } }
@@ -793,7 +795,7 @@ class ScreenApp {
     else if (dev.startsWith("heater_generic ")) script = `SET_HEATER_TEMPERATURE HEATER="${name}" TARGET=${temp}`;
     else if (dev.startsWith("temperature_fan ")) script = `SET_TEMPERATURE_FAN_TARGET TEMPERATURE_FAN="${name}" TARGET=${temp}`;
     else { this.popup(`Unknown Heater ${dev}`); return false; }
-    this.mr.gcode(script).catch((e) => this.popup(e.message));
+    this.inputs.add({ type: "set", key: `temp:${dev}`, script, label: `${dev === "heater_bed" ? "Bed" : prettify(name)} ${temp}°` });
     return true;
   }
 
