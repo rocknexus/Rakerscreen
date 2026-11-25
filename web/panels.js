@@ -219,6 +219,7 @@ Panels.move = class extends Panel {
       home: B("home", "Home", "color4", () => this.home()),
       motors_off: B("motor-off", "Disable Motors", "color4", () => app.confirmSendAction("Are you sure you wish to disable motors?", "printer.gcode.script", { script: "M18" })),
     };
+    for (const k of ["x+", "x-", "y+", "y-", "z+", "z-"]) this.holdToMove(this.b[k], k[0].toUpperCase(), k[1]);
     this.adjust = Button("settings", null, "color2", { side: true, onclick: () => app.showPanel("move_options") });
     this.pos = {};
     // tap a coordinate to type a position to move to (Rakerscreen extra)
@@ -309,7 +310,59 @@ Panels.move = class extends Panel {
       },
     });
   }
+  /** Hold a move button (over HOLD_MS) to move continuously until it's let go; a short tap is still one step.
+      Klipper can't cancel a queued move, so while held it's fed short moves (CHUNK s of travel each) keeping at
+      most AHEAD s queued: on release the toolhead runs on by about that much. Stops at the axis limits. */
+  holdToMove(btn, axis, dir) {
+    const HOLD_MS = 350, CHUNK = 0.1, AHEAD = 0.2;
+    const a = axis.toLowerCase(), i = "xyz".indexOf(a);
+    let timer = null, tick = null, out = false, ahead = 0, tgt = null; // tgt: where the moves sent so far end
+    const stop = () => {
+      clearTimeout(timer); timer = null;
+      if (tick) { clearInterval(tick); tick = null; btn.classList.remove("holding"); }
+    };
+    const feed = () => {
+      const now = performance.now() / 1000;
+      if (out || ahead - now > AHEAD - CHUNK) return;
+      const f = this.speedFor(a), v = f / 60;
+      let sign = dir === "-" ? -1 : 1;
+      if (Settings.get(`invert_${a}`) && a !== "z") sign = -sign;
+      const lim = this.axisLimits(i);
+      let d = sign * v * CHUNK;
+      if (tgt !== null && lim) {
+        const to = Math.min(lim[1], Math.max(lim[0], tgt + d));
+        d = to - tgt;
+        if (Math.abs(d) < 0.01) { stop(); this.app.popup(`${axis} limit`, 1); return; }
+      }
+      if (tgt !== null) tgt += d;
+      const abs = this.p.stat("gcode_move", "absolute_coordinates");
+      out = true;
+      ahead = Math.max(now, ahead) + Math.abs(d) / v;
+      this.mr.gcode(`G91\nG0 ${axis}${Math.round(d * 1000) / 1000} F${f}${abs ? "\nG90" : ""}`)
+        .catch((e) => { stop(); this.app.popup(e.message || String(e)); })
+        .finally(() => { out = false; });
+    };
+    btn.addEventListener("pointerdown", (e) => {
+      btn._held = false;
+      if (btn.disabled || e.button > 0) return;
+      const homed = this.p.stat("toolhead", "homed_axes") || "";
+      if (!homed.includes(a)) return; // a tap tells Klipper's own error
+      timer = setTimeout(() => {
+        timer = null;
+        if (this.app.inputs.items.length || this.app.inputs.busy()) return; // taps still going out: not a hold
+        btn._held = true; // the click that ends the hold isn't a step
+        btn.classList.add("holding");
+        const pos = this.p.stat("gcode_move", "gcode_position");
+        tgt = pos ? pos[i] : null; ahead = 0;
+        feed();
+        tick = setInterval(feed, 40);
+      }, HOLD_MS);
+    });
+    for (const ev of ["pointerup", "pointercancel", "pointerleave"]) btn.addEventListener(ev, stop);
+    btn.addEventListener("contextmenu", (e) => e.preventDefault());
+  }
   move(axis, dir, btn) {
+    if (btn && btn._held) { btn._held = false; return; }
     const a = axis.toLowerCase();
     if (Settings.get(`invert_${a}`) && a !== "z") dir = dir === "+" ? "-" : "+";
     const speed = this.speedFor(a);

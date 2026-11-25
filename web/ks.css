@@ -580,3 +580,4 @@ body.kb-open .dialog-body .desc { font-size: .85em; }
 @keyframes stackedFlash { from { box-shadow: inset 0 0 0 .2em var(--text); } to { box-shadow: inset 0 0 0 .2em transparent; } }
 .btn.stacked { animation: stackedFlash .35s ease-out; }
 .pos-entry .pos-req { display: block; font-size: .75em; opacity: .7; }
+.btn.holding { box-shadow: inset 0 0 0 .2em var(--text); }
