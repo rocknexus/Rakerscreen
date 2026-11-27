@@ -4,6 +4,9 @@
 
 const VERSION = "0.2.9";
 
+// after the screensaver lifts, touches are ignored this long so the waking tap can't press a button underneath
+const WAKE_TOUCH_GUARD_MS = 600;
+
 // Menus translated from KlipperScreen config/main_menu.conf, print_menu.conf, move_menu.conf.
 // Only panels that Rakerscreen implements are listed.
 const MENUS = {
@@ -208,12 +211,28 @@ class ScreenApp {
   // ------------------------------------------------------------ screensaver + DPMS (widgets/screensaver.py)
   initScreensaver() {
     this.ss = $("#screensaver");
+    this.ssGuardUntil = 0;
+    const blocking = () => this.ssShowing || Date.now() < this.ssGuardUntil;
+    const swallow = (ev) => { ev.stopPropagation(); if (ev.cancelable) ev.preventDefault(); };
     const activity = (ev) => {
-      if (this.ssShowing) { ev.stopPropagation(); ev.preventDefault(); this.closeScreensaver(); return; }
+      if (blocking()) {
+        swallow(ev);
+        if (this.ssShowing) this.closeScreensaver(ev.type === "pointerdown");
+        return;
+      }
       this.resetScreensaver();
     };
     document.addEventListener("pointerdown", activity, true);
     document.addEventListener("keydown", activity, true);
+    // The rest of the waking tap (release, synthesized mouse events, click, long-press menu) must never
+    // reach the button that was under the finger, so swallow it all while blanked and during the guard.
+    for (const type of ["pointerup", "pointercancel", "touchstart", "touchend", "mousedown", "mouseup", "click", "dblclick", "contextmenu"]) {
+      document.addEventListener(type, (ev) => {
+        if (!blocking()) return;
+        swallow(ev);
+        if ((type === "pointerup" || type === "pointercancel") && this.ssHeld) this.finishWake();
+      }, { capture: true, passive: false });
+    }
     this.resetScreensaver();
   }
   blankingTime() {
@@ -234,12 +253,24 @@ class ScreenApp {
     // DPMS on Android: drop this window's backlight to minimum (needs no permission)
     if (Settings.get("use_dpms") && window.PSBridge && PSBridge.setBrightness) PSBridge.setBrightness(0);
   }
-  closeScreensaver() {
+  // held: woken by a finger that is still down; the overlay stays until it lifts so the tap can't land underneath
+  closeScreensaver(held = false) {
     if (!this.ssShowing || this.ssWaking) return;
     if (window.PSBridge && PSBridge.setBrightness) PSBridge.setBrightness(-1);
-    // screens take a moment to wake; swallow touches during the delay (screensaver_wake_delay)
     this.ssWaking = true;
-    setTimeout(() => {
+    this.ssHeld = held;
+    if (held) this.ssHeldTimer = setTimeout(() => this.finishWake(), 5000); // in case the release is never seen
+    else this.finishWake();
+  }
+  finishWake() {
+    if (!this.ssWaking || this.ssWakeTimer) return;
+    this.ssHeld = false;
+    clearTimeout(this.ssHeldTimer);
+    // screens take a moment to wake; keep the overlay up for screensaver_wake_delay, then ignore touches
+    // for a short guard so a waking tap (or a quick second tap) doesn't press whatever is underneath
+    this.ssWakeTimer = setTimeout(() => {
+      this.ssWakeTimer = null;
+      this.ssGuardUntil = Date.now() + WAKE_TOUCH_GUARD_MS;
       this.ssWaking = false; this.ssShowing = false;
       this.ss.classList.remove("show");
       this.resetScreensaver();
