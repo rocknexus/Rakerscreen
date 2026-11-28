@@ -2,7 +2,7 @@
    title bar), dialogs and popups. Mirrors KlipperScreen screen.py + panels/base_panel.py. */
 "use strict";
 
-const VERSION = "0.4.19-dev";
+const VERSION = "0.4.20-dev";
 
 // Menus translated from KlipperScreen config/main_menu.conf, print_menu.conf, move_menu.conf.
 // Only panels that Rakerscreen implements are listed.
@@ -230,12 +230,31 @@ class ScreenApp {
   // ------------------------------------------------------------ screensaver + DPMS (widgets/screensaver.py)
   initScreensaver() {
     this.ss = $("#screensaver");
+    // The tap that wakes the screen only wakes it: its release and click (and any tap in the next WAKE_GUARD ms) are
+    // swallowed too, or they'd land on the button that was under the screensaver.
+    const WAKE_GUARD = 600;
+    const swallow = (ev) => { ev.stopPropagation(); ev.preventDefault(); };
+    const guarded = () => this.ssWakeGesture || performance.now() < (this.ssGuardUntil || 0);
     const activity = (ev) => {
-      if (this.ssShowing) { ev.stopPropagation(); ev.preventDefault(); this.closeScreensaver(); return; }
+      if (this.ssShowing) {
+        swallow(ev);
+        if (ev.type === "pointerdown") this.ssWakeGesture = true;
+        this.closeScreensaver();
+        this.ssGuardUntil = performance.now() + WAKE_GUARD + (parseInt(Settings.get("screensaver_wake_delay")) || 0) * 1000;
+        return;
+      }
+      if (ev.type === "pointerdown" && guarded()) { swallow(ev); return; }
       this.resetScreensaver();
     };
     document.addEventListener("pointerdown", activity, true);
     document.addEventListener("keydown", activity, true);
+    for (const t of ["pointerup", "pointercancel", "click", "mousedown", "mouseup", "touchstart", "touchend", "contextmenu"]) {
+      document.addEventListener(t, (ev) => {
+        if (!guarded()) return;
+        swallow(ev);
+        if (t === "pointerup" || t === "pointercancel") setTimeout(() => { this.ssWakeGesture = false; }, 0); // its click comes right after
+      }, { capture: true, passive: false });
+    }
     this.resetScreensaver();
   }
   blankingTime() {
